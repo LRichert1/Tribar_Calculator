@@ -89,10 +89,13 @@
   .stage{position:relative;line-height:0;background:#111}
   .stage canvas{width:100%;height:auto;display:block}
   .stage canvas.widths{position:absolute;left:0;top:0;height:100%;pointer-events:none}
-  .win{position:absolute;border:2px solid #9aa5b1;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .stage{cursor:crosshair;-webkit-tap-highlight-color:transparent}
+  .win{position:absolute;border:2px solid #9aa5b1;pointer-events:none}
+  .pickLbl{position:absolute;background:#111;color:#ffd400;font-weight:800;font-size:13px;
+           line-height:1.35;padding:2px 7px;border-radius:5px;border:2px solid #ffd400;white-space:nowrap;pointer-events:none}
   .win.dim{background:rgba(15,20,25,.58)}
-  .win .lbl{position:absolute;left:4px;top:4px;color:#fff;background:#9aa5b1;font-weight:700;font-size:12.5px;
-            line-height:1.35;padding:1px 6px;border-radius:4px;white-space:nowrap}
+  .win .lbl{position:absolute;left:4px;top:4px;max-width:calc(100% - 8px);color:#fff;background:#9aa5b1;font-weight:700;
+            font-size:12.5px;line-height:1.35;padding:1px 6px;border-radius:4px}
   .bar{height:6px;background:var(--brand-50)}
   .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
   .ph-line{padding:8px 12px;font-size:13px;color:var(--muted)}
@@ -164,8 +167,8 @@
       and sun or flash glare on wet bars gives bad readings.</p>
     <div id="photos"></div>
     <div id="photoTools" hidden style="margin-top:12px">
-      <p class="tip" style="margin-bottom:6px">Tap a window to leave it out: galvanized replacement bars, glare, or anything that isn’t tribar.
-        Tap it again to use it.</p>
+      <p class="tip" style="margin-bottom:6px"><b>Tap the worst bar in each photo.</b> The app follows it along its length and
+        measures it; the worst bar you tap is the result. Tap it again to clear it.</p>
       <label class="marks"><input type="checkbox" id="marksBox" checked> Show bar widths: blue = new bar, red = measured</label>
     </div>
   </section>
@@ -183,9 +186,9 @@
     <div id="saved"></div>
   </section>
 
-  <p class="foot">Width loss = 1 − (bar width ÷ bar pitch) ÷ 0.4686, the width-to-pitch ratio of new tribar measured at C44.
-    It is reported 1:1 as cross-section loss. The band comes from the worst-area width (25th percentile of each window),
-    as in tribar_measure.py.</p>
+  <p class="foot">Width loss = 1 − (bar width ÷ bar pitch) ÷ 0.4686, the width-to-pitch ratio of new tribar measured at C44,
+    reported 1:1 as cross-section loss. The result is the worst bar you tap, measured as the median along its length
+    (about ±5 points for one bar). The window percentages show the typical loss around it for comparison.</p>
 </main>
 
 <div class="toast" id="toast"></div>
@@ -219,7 +222,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 
 const STATE = {
   loc: {site:"", barn:"", room:"", row:"", side:"", note:""},
-  photos: [],      // the reading being taken: {id, name, status, msg, progress, result, excluded:Set, ...}
+  photos: [],      // the reading being taken: {id, name, status, msg, progress, result, pick (the tapped worst bar), ...}
   readings: [],    // saved readings, newest first
   marks: true,
 };
@@ -309,7 +312,7 @@ async function decodePhoto(file){
 let queue = Promise.resolve();
 function addFiles(files){
   for (const file of files){
-    const ph = {id:uid(), name:file.name || "Photo", status:"queued", msg:"Waiting…", progress:0, excluded:new Set(), file};
+    const ph = {id:uid(), name:file.name || "Photo", status:"queued", msg:"Waiting…", progress:0, pick:null, file};
     STATE.photos.push(ph);
     queue = queue.then(() => processPhoto(ph));
   }
@@ -340,9 +343,10 @@ function removePhoto(ph){
 }
 
 /* ------------------------------------------------------------------ *
- *  Photo cards: the straightened photo with its 12 windows
+ *  Photo cards: the straightened photo, its 12 windows, and the worst
+ *  bar the inspector taps
  * ------------------------------------------------------------------ */
-const SHORT_WHY = [["bars not", "no bars found"], ["low contrast", "low contrast"], ["too few", "too few edges"],
+const SHORT_WHY = [["bars not", "no bars"], ["low contrast", "unclear"], ["too few", "few edges"],
                    ["highlight", "glare?"], ["gap", "gap?"]];
 const shortWhy = why => (SHORT_WHY.find(([k]) => why.includes(k)) || [0, "not measured"])[1];
 
@@ -362,22 +366,25 @@ function drawPhoto(ph){
   ctx.drawImage(ph.img, 0, 0, ph.w, ph.h);
   if (ph.img.close) ph.img.close();
   ph.img = null;
-  // one tappable box per measurement window, positioned in % so it tracks the photo at any screen size
+  // one box per measurement window, positioned in % so it tracks the photo at any screen size
   const pctPos = (v, of) => (100 * v / of) + "%";
   const wins = r.windows.map(w => {
     const [x0, x1, y0, y1] = w.box;
-    return el("div", {class:"win", onclick:() => tapWindow(ph, w),
+    return el("div", {class:"win",
       style:"left:" + pctPos(x0, r.width) + ";top:" + pctPos(y0, r.height) +
             ";width:" + pctPos(x1 - x0, r.width) + ";height:" + pctPos(y1 - y0, r.height)}, [el("span", {class:"lbl"})]);
   });
-  Object.assign(ph, {base, widths, wins, scale:s, stage:el("div", {class:"stage"}, [base, widths, ...wins])});
+  const pickLbl = el("div", {class:"pickLbl", hidden:""});
+  const stage = el("div", {class:"stage", onclick:ev => tapBar(ph, ev)}, [base, widths, ...wins, pickLbl]);
+  Object.assign(ph, {base, widths, wins, pickLbl, stage, scale:s});
   drawOverlay(ph);
 }
 
 // Each measured bar gets two lines on its centreline: the width a new bar
 // would have at that spot (baseline ratio x the local bar spacing) in blue,
 // and the width measured in the photo in red on top. Blue showing past the
-// red ends is the width that has been lost.
+// red ends is the width that has been lost. The tapped worst bar is drawn
+// heavier over a yellow strip.
 function drawOverlay(ph){
   const r = ph.result, ctx = ph.widths.getContext("2d"), s = ph.scale, half = Tribar.BASELINE_RATIO / 2;
   ctx.clearRect(0, 0, ph.widths.width, ph.widths.height);
@@ -387,37 +394,59 @@ function drawOverlay(ph){
     ctx.stroke();
   };
   r.windows.forEach((w, i) => {
-    const out = ph.excluded.has(w.cell), box = ph.wins[i], lbl = box.firstChild;
-    if (STATE.marks && w.marks && !out){
+    const box = ph.wins[i], lbl = box.firstChild;
+    if (STATE.marks && w.marks){
       lines(w.marks, m => half * m[3], "rgba(0,200,255,.8)", Math.max(2, 3 * s));
       lines(w.marks, m => m[2] / 2, "rgba(255,45,45,.95)", Math.max(1, 1.6 * s));
     }
     let color = "#9aa5b1";
-    if (!w.ok || out) lbl.textContent = out ? "left out" : shortWhy(w.why);
+    if (!w.ok) lbl.textContent = shortWhy(w.why);
     else {
       const loss = 1 - w.ratio / Tribar.BASELINE_RATIO;
       color = BAND_COLORS[Tribar.grade(loss)]; lbl.textContent = pct(loss);
     }
-    box.className = "win" + (!w.ok || out ? " dim" : "");
+    box.className = "win" + (w.ok ? "" : " dim");
     box.style.borderColor = lbl.style.background = color;
-    box.title = !w.ok ? "Not measured: " + w.why : out ? "Left out. Tap to use it again" : "Tap to leave this window out";
   });
+  const p = ph.pick;
+  ph.pickLbl.hidden = !p;
+  if (!p) return;
+  lines(p.marks, m => (half + 0.3) * m[3], "rgba(255,212,0,.4)", Math.max(4, 18 * s));
+  lines(p.marks, m => half * m[3], "rgba(0,200,255,1)", Math.max(3, 5 * s));
+  lines(p.marks, m => m[2] / 2, "rgba(255,45,45,1)", Math.max(2, 3 * s));
+  // label beside the middle of the bar, on whichever side has room
+  const mid = p.marks[p.marks.length >> 1], right = mid[1] / r.width < 0.7, off = (half + 0.4) * mid[3];
+  Object.assign(ph.pickLbl.style, {left:(100 * (mid[1] + (right ? off : -off)) / r.width) + "%",
+    top:(100 * mid[0] / r.height) + "%", transform:right ? "translate(0, -50%)" : "translate(-100%, -50%)"});
+  ph.pickLbl.textContent = "Worst bar " + pct(p.loss);
 }
 
-function tapWindow(ph, w){
-  if (!w.ok){ toast("Not measured: " + w.why); return; }
-  if (ph.excluded.has(w.cell)) ph.excluded.delete(w.cell); else ph.excluded.add(w.cell);
+// The measured bars in a photo's usable windows: [y, centre x, width, pitch]
+const barMarks = ph => ph.result.windows.filter(w => w.ok).flatMap(w => w.marks || []);
+
+function tapBar(ph, ev){
+  const rect = ph.stage.getBoundingClientRect(), r = ph.result;
+  const x = (ev.clientX - rect.left) / rect.width * r.width, y = (ev.clientY - rect.top) / rect.height * r.height;
+  const t = Tribar.traceBar(barMarks(ph), x, y);
+  if (!t){
+    const w = r.windows.find(w => x >= w.box[0] && x < w.box[1] && y >= w.box[2] && y < w.box[3]);
+    toast(w && !w.ok ? "Not measured here: " + w.why : "No measured bar there. Tap on a bar inside a measured window.");
+    return;
+  }
+  if (ph.pick && ph.pick.marks.some(m => t.marks.includes(m))) ph.pick = null;   // tapped the picked bar again
+  else {
+    ph.pick = t;
+    if (t.n < 8) toast("Only " + t.n + " measurements along that bar. A closer, flatter photo would read it better.");
+  }
   drawOverlay(ph); photoLine(ph); renderResult();
 }
 
-function usableWindows(ph){ return ph.result.windows.filter(w => w.ok && !ph.excluded.has(w.cell)); }
-
 function photoLine(ph){
-  const r = ph.result, measurable = r.windows.filter(w => w.ok).length, sum = Tribar.summarize(usableWindows(ph));
+  const r = ph.result, measurable = r.windows.filter(w => w.ok).length, sum = Tribar.summarize(r.windows);
   const bits = [(r.turned ? "Turned 90°, straightened " : "Straightened ") + (r.angle >= 0 ? "+" : "") + r.angle.toFixed(2) + "°",
-                measurable + " of " + r.windows.length + " windows measurable"];
-  if (ph.excluded.size) bits.push(ph.excluded.size + " left out");
-  if (sum) bits.push("typical " + pct(sum.typical) + ", worst-area " + pct(sum.worst));
+                measurable + " of " + r.windows.length + " windows measurable",
+                ph.pick ? "worst bar " + pct(ph.pick.loss) + " (" + ph.pick.n + " measurements)" : "tap the worst bar"];
+  if (sum) bits.push("typical " + pct(sum.typical));
   if (ph.fullSize) bits.push("measured at " + (ph.w * ph.h / 1e6).toFixed(1) + " of " + (ph.fullSize[0] * ph.fullSize[1] / 1e6).toFixed(1) + " MP");
   bits.push(ph.secs.toFixed(1) + " s");
   ph.lineEl.textContent = bits.join(" · ");
@@ -452,38 +481,45 @@ function renderPhotos(){
 }
 
 /* ------------------------------------------------------------------ *
- *  Result for the current reading (all its photos pooled)
+ *  Result for the current reading: the worst bar tapped in any of its
+ *  photos, with the typical loss across all of them for comparison
  * ------------------------------------------------------------------ */
 function currentSummary(){
   const done = STATE.photos.filter(p => p.status === "done");
-  const windows = done.flatMap(usableWindows);
-  return {done, sum: Tribar.summarize(windows),
-          measurable: done.reduce((n, p) => n + p.result.windows.filter(w => w.ok).length, 0),
+  const worst = done.filter(p => p.pick).sort((a, b) => b.pick.loss - a.pick.loss)[0] || null;
+  return {done, worst, typical: Tribar.summarize(done.flatMap(p => p.result.windows)),
           total: done.reduce((n, p) => n + p.result.windows.length, 0)};
 }
 
 function renderResult(){
   const card = $("#resultCard"); card.innerHTML = "";
-  const {done, sum, measurable, total} = currentSummary();
+  const {done, worst, typical, total} = currentSummary();
   const busy = STATE.photos.some(p => p.status === "queued" || p.status === "measuring");
+  const stat = (v, label) => el("div", {class:"stat"}, [el("b", {text:v}), el("span", {text:label})]);
   card.appendChild(el("div", {class:"hdr"}, [el("h2", {text:"Result"})]));
-  if (!sum){
+  if (!done.length || !typical){
     card.appendChild(el("p", {class:"empty", text: busy ? "Measuring…" :
-      done.length ? "No usable windows. Retake the photo (see the tips above) or put back a window you left out." :
-      "Take or choose a photo of the tribar at this location."}));
+      done.length ? "No usable windows. Retake the photo (see the tips above)." :
+      "Take or choose a photo with the worst bar at this location in it."}));
     return;
   }
+  const photos = done.length > 1 ? " across the photos" : "";
+  if (!worst){
+    card.appendChild(el("p", {class:"empty", text: busy ? "Measuring…" : "Tap the worst bar in the photo to get the result."}));
+    card.appendChild(el("div", {class:"stats"}, [stat(pct(typical.typical), "Typical width loss" + photos),
+                                                 stat(typical.n + " of " + total, "Windows measured")]));
+    return;
+  }
+  const w = worst.pick, band = Tribar.grade(w.loss);
   card.appendChild(el("div", {class:"top"}, [
-    el("div", {class:"bandBig", text:BAND_TEXT[sum.band], style:"background:" + BAND_COLORS[sum.band]}),
-    el("div", {class:"bandCap"}, [el("b", {text:"Cross-section loss"}), el("br"),
-      "report band, from the worst-area width loss"]),
+    el("div", {class:"bandBig", text:BAND_TEXT[band], style:"background:" + BAND_COLORS[band]}),
+    el("div", {class:"bandCap"}, [el("b", {text:"Cross-section loss"}), el("br"), "from the worst bar you tapped"]),
   ]));
-  const stat = (v, label) => el("div", {class:"stat"}, [el("b", {text:v}), el("span", {text:label})]);
   card.appendChild(el("div", {class:"stats"}, [
-    stat(pct(sum.worst), "Worst-area width loss"),
-    stat(pct(sum.typical), "Typical width loss"),
-    stat(sum.ratio.toFixed(4), "Median width ÷ pitch (new " + Tribar.BASELINE_RATIO + ")"),
-    stat(sum.n + " of " + total, "Windows used" + (measurable > sum.n ? " (" + (measurable - sum.n) + " left out)" : "")),
+    stat(pct(w.loss), "Worst bar width loss" + (done.length > 1 ? " (" + worst.name + ")" : "")),
+    stat(String(w.n), "Measurements along that bar"),
+    stat(pct(typical.typical), "Typical width loss" + photos + ", for comparison"),
+    stat(typical.n + " of " + total, "Windows measured"),
   ]));
   card.appendChild(el("div", {class:"hdr", style:"margin:0"}, [
     el("span", {class:"tip", style:"margin:0;flex:1", text:"Saves under: " + [STATE.loc.site, locLabel(STATE.loc)].filter(Boolean).join(" · ")}),
@@ -498,15 +534,19 @@ function discardReading(){
 }
 
 function saveReading(){
-  const {done, sum, measurable, total} = currentSummary();
-  if (!sum) return;
+  const {done, worst, typical, total} = currentSummary();
+  if (!worst) return;
+  const w = worst.pick, mid = w.marks[w.marks.length >> 1];
   STATE.readings.unshift({
     id:uid(), savedAt:new Date().toISOString(), ...STATE.loc,
-    band:sum.band, worst:sum.worst, typical:sum.typical, ratio:sum.ratio,
-    used:sum.n, measurable, total, baseline:Tribar.BASELINE_RATIO,
+    band:Tribar.grade(w.loss), worstBar:w.loss, worstBarRatio:w.ratio, worstBarN:w.n, worstBarPhoto:worst.name,
+    typical:typical.typical, used:typical.n, total, baseline:Tribar.BASELINE_RATIO,
     photos: done.map(p => ({name:p.name, angle:p.result.angle, turned:p.result.turned,
-      windows: p.result.windows.map(w => ({cell:w.cell, ok:w.ok, why:w.why || null,
-        ratio: w.ratio ?? null, ratio_worst: w.ratio_worst ?? null, n: w.n ?? null, leftOut:p.excluded.has(w.cell)}))})),
+      // where the tapped bar is, in the straightened photo's pixels
+      pick: p.pick ? {loss:p.pick.loss, n:p.pick.n, x:Math.round(p.pick.marks[p.pick.marks.length >> 1][1]),
+                      y0:Math.round(p.pick.marks[0][0]), y1:Math.round(p.pick.marks[p.pick.marks.length - 1][0])} : null,
+      windows: p.result.windows.map(v => ({cell:v.cell, ok:v.ok, why:v.why || null,
+        ratio: v.ratio ?? null, ratio_worst: v.ratio_worst ?? null, n: v.n ?? null}))})),
   });
   persist();
   STATE.photos = []; renderPhotos(); renderResult(); renderSaved();
@@ -526,8 +566,9 @@ function renderSaved(){
       el("span", {class:"chip", text:BAND_TEXT[r.band], style:"background:" + BAND_COLORS[r.band]}),
       el("div", {class:"what"}, [
         el("div", {class:"where", text:locLabel(r)}),
-        el("div", {class:"meta", text:[r.site, "worst-area " + pct(r.worst), "typical " + pct(r.typical),
-          r.used + "/" + r.total + " windows", r.photos.length + (r.photos.length === 1 ? " photo" : " photos"),
+        el("div", {class:"meta", text:[r.site, r.worstBar != null ? "worst bar " + pct(r.worstBar) : null,
+          r.typical != null ? "typical " + pct(r.typical) : null,
+          r.photos.length + (r.photos.length === 1 ? " photo" : " photos"),
           new Date(r.savedAt).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}),
           r.note].filter(Boolean).join(" · ")}),
       ]),
@@ -540,11 +581,13 @@ function renderSaved(){
 }
 
 const csvCell = v => { const s = v == null ? "" : String(v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const pct1 = v => v == null ? "" : (100 * v).toFixed(1);
 function exportCSV(){
-  const head = ["Site","Barn","Room","Row","Side","Note","Cross-section loss band","Worst-area width loss %","Typical width loss %",
-                "Median width/pitch ratio","Windows used","Windows measurable","Windows total","Photos","Baseline ratio","Saved"];
+  const head = ["Site","Barn","Room","Row","Side","Note","Cross-section loss band","Worst bar width loss %",
+                "Measurements on worst bar","Worst bar photo","Typical width loss %","Windows measured","Windows total",
+                "Photos","Baseline ratio","Saved"];
   const rows = STATE.readings.slice().reverse().map(r => [r.site, r.barn, r.room, r.row, r.side, r.note, BAND_TEXT[r.band],
-    (100 * r.worst).toFixed(1), (100 * r.typical).toFixed(1), r.ratio.toFixed(4), r.used, r.measurable, r.total,
+    pct1(r.worstBar), r.worstBarN, r.worstBarPhoto, pct1(r.typical), r.used, r.total,
     r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString()]);
   const csv = [head, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
   const sites = [...new Set(STATE.readings.map(r => r.site).filter(Boolean))];

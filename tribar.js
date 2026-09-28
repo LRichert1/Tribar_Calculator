@@ -488,6 +488,36 @@ function measure(gray, w, h, opts = {}) {
   return { width: w, height: h, turned, angle, windows };
 }
 
+// The bar under the point (x, y): follow it up and down the straightened
+// photo through `marks` ([y, centre x, width, pitch] from usable windows) and
+// return its width loss as the median along its length, so a glare spot or a
+// missed edge on part of the bar doesn't set the answer. Not in the
+// reference; this is the "single worst bar" the inspector picks.
+function traceBar(marks, x, y, baseline = BASELINE_RATIO) {
+  let seed = null, best = Infinity;
+  for (const m of marks) {
+    const dx = Math.abs(m[1] - x), dy = Math.abs(m[0] - y);
+    if (dx > m[3] / 2 || dy > 40) continue;
+    if (dx + 0.25 * dy < best) { best = dx + 0.25 * dy; seed = m; }
+  }
+  if (!seed) return null;
+  const byRow = new Map();
+  for (const m of marks) { if (!byRow.has(m[0])) byRow.set(m[0], []); byRow.get(m[0]).push(m); }
+  const rows = [...byRow.keys()].sort((a, b) => a - b), bar = [seed];
+  for (const dir of [-1, 1]) {
+    let cur = seed;
+    for (let i = rows.indexOf(seed[0]) + dir; i >= 0 && i < rows.length; i += dir) {
+      if (Math.abs(rows[i] - cur[0]) > 60) break;   // lost the bar for more than ~3 scan rows
+      let next = null, nd = 0.35 * cur[3];
+      for (const m of byRow.get(rows[i])) { const d = Math.abs(m[1] - cur[1]); if (d < nd) { nd = d; next = m; } }
+      if (next) { bar.push(next); cur = next; }
+    }
+  }
+  bar.sort((a, b) => a[0] - b[0]);
+  const ratio = median(bar.map((m) => m[2] / m[3]));
+  return { n: bar.length, ratio, loss: 1 - ratio / baseline, marks: bar };
+}
+
 // tribar_measure.report over a set of windows (possibly from several
 // photos): typical and worst-area width loss, and the band to report,
 // taken from the worst-area figure as the reference does. Width loss is
@@ -501,7 +531,7 @@ function summarize(windows, baseline = BASELINE_RATIO) {
 }
 
 const api = {
-  BASELINE_RATIO, grade, grayFromRGBA, measure, summarize,
+  BASELINE_RATIO, grade, grayFromRGBA, measure, summarize, traceBar,
   // internals, for test/parity.py
   cvRound, percentileSorted, blur1d, detrend, pitchFFT, rowMeasure, halfmax, analyzeWindow,
   rotate, angleScore, findBars, turn90, ANGLES,
