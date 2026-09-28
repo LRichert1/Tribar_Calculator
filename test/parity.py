@@ -14,9 +14,10 @@ Checks, per photo:
   auto     tribar.js's own angle search picks the reference's angle
   app      with only the readings that follow a bar (what the app shows),
            typical and worst-area loss stay within 1.5 points of the
-           reference's on the clean photos; on the gravel photo, where the
-           reference reads the stones between the bars, every window the app
-           measures is within 5 points of the drawn bars
+           reference's on the clean photos; on the two gravel photos, where the
+           reference reads stones between the bars or lit gravel merged into
+           the bars' edges, every window the app measures is within 5 points
+           of the drawn bars
 Exits non-zero if any check fails.
 """
 import json, os, subprocess, sys, tempfile
@@ -38,12 +39,15 @@ def smooth_noise(rng, h, w, scale):
 
 
 def synth(W, H, pitch, ratio, angle, seed, rust=True, blur=1.2, noise=3.0, jitter=0.02,
-          highlights=0, galv_ratio=None, gravel=None, jpeg=90):
+          highlights=0, galv_ratio=None, gravel=None, lit=None, jpeg=90):
     """Bright bars of width ratio*pitch over a dark pit, tilted `angle` deg.
     With galv_ratio, bars left of centre are rusty at `ratio` and bars right of
     centre are galvanized at `galv_ratio`. With gravel=(top, bottom), that band
     of the photo (fractions of its height) has pale stones on the pit floor,
-    brighter than the bars, as in the C10 photos."""
+    brighter than the bars, as in the C10 photos. With lit=(top, bottom), the
+    floor in that band is gravel lit about as bright as the bars along one
+    side of each bar and in the bar's shadow along the other, which is how
+    the C10 gravel band looks up close."""
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
     th = np.deg2rad(angle)
@@ -67,13 +71,20 @@ def synth(W, H, pitch, ratio, angle, seed, rust=True, blur=1.2, noise=3.0, jitte
     pit = 24 + 10 * smooth_noise(rng, H, W, 60)
     if gravel:
         stones = np.zeros((H, W), np.float32)
-        for _ in range(int(W * H * (gravel[1] - gravel[0]) / (gravel_n := 60))):
+        for _ in range(int(W * H * (gravel[1] - gravel[0]) / 60)):
             cx, cy, s = rng.uniform(0, W), rng.uniform(H * gravel[0], H * gravel[1]), rng.uniform(1.5, 0.12 * pitch)
             x0, x1, y0, y1 = int(max(0, cx - 3 * s)), int(min(W, cx + 3 * s + 1)), int(max(0, cy - 3 * s)), int(min(H, cy + 3 * s + 1))
             g = np.exp(-((xx[y0:y1, x0:x1] - cx) ** 2 + (yy[y0:y1, x0:x1] - cy) ** 2) / (2 * s * s))
             stones[y0:y1, x0:x1] = np.maximum(stones[y0:y1, x0:x1], rng.uniform(0.5, 1.0) * g)
         band = np.clip(np.minimum(yy - H * gravel[0], H * gravel[1] - yy) / 10, 0, 1)
         pit = pit + band * (60 + 170 * stones)
+    if lit:
+        across = u - phase - k * pitch             # signed distance from the bar's centre line
+        side = (across > hw) & (across < hw + 0.18 * pitch)
+        shadow = (across < -hw) & (across > -hw - 0.12 * pitch)
+        band = np.clip(np.minimum(yy - H * lit[0], H * lit[1] - yy) / 10, 0, 1)
+        gravel_floor = np.where(side, 0.8, np.where(shadow, 0.0, 0.38)) * 180 * light * (1 + 0.15 * smooth_noise(rng, H, W, 5))
+        pit = pit * (1 - band) + np.maximum(pit, gravel_floor) * band
     if highlights:
         spots = np.zeros((H, W), np.float32)
         for _ in range(highlights):
@@ -102,9 +113,10 @@ CASES = [
     ('phone size, 12 MP',    4032, 3024, 110, 0.44,  2.0, {}),
     ('bars across the photo', 1600, 1200, 60, 0.42, 96.0, {}),  # reference can't do this one
     ('gravel under the bars', 1600, 1200, 50, 0.40,   2.5, {'gravel': (0.12, 0.30)}),  # reference reads the stones
+    ('lit gravel beside bars', 1600, 1200, 50, 0.40, -1.5, {'lit': (0.10, 0.32)}),     # reference reads bar + gravel
 ]
 # cases where the reference is known to be wrong: the app is checked against the drawn bars instead
-BRIGHT_FLOOR = {'gravel under the bars'}
+BRIGHT_FLOOR = {'gravel under the bars', 'lit gravel beside bars'}
 
 
 def py_windows(res):
@@ -188,11 +200,12 @@ def main():
             elif name in BRIGHT_FLOOR:
                 truth = 1 - ratio / BASELINE
                 loss = lambda ws: [1 - w['ratio'] / BASELINE for w in ws if w['ok']]
-                ref_worst, app_worst = max(loss(js['auto']['windows'])), max(loss(js['app']['windows']))
-                line += ' | drawn %.1f%%: worst window reference %.1f%%, app %.1f%% (%d/12)' % (
-                    100 * truth, 100 * ref_worst, 100 * app_worst, app_sum[3])
-                if ref_worst < truth + 0.10:
-                    problems.append('test photo no longer fools the reference (worst window %.1f%%)' % (100 * ref_worst))
+                off = lambda ws: max(loss(ws), key=lambda v: abs(v - truth))   # the window furthest from the drawn bars
+                ref_off, app_off = off(js['auto']['windows']), off(js['app']['windows'])
+                line += ' | drawn %.1f%%: furthest window reference %.1f%%, app %.1f%% (%d/12)' % (
+                    100 * truth, 100 * ref_off, 100 * app_off, app_sum[3])
+                if abs(ref_off - truth) < 0.10:
+                    problems.append('test photo no longer fools the reference (furthest window %.1f%%)' % (100 * ref_off))
                 for w in js['app']['windows']:
                     if w['ok'] and abs(1 - w['ratio'] / BASELINE - truth) > 0.05:
                         problems.append('app window %s reads %.1f%%, drawn bars %.1f%%' % (w['cell'], 100 * (1 - w['ratio'] / BASELINE), 100 * truth))

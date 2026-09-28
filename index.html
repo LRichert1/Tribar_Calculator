@@ -224,8 +224,9 @@ const BAND_TEXT = {"0-10%":"0 to 10%","10-20%":"10 to 20%","20-30%":"20 to 30%",
 const pct = v => (100*v).toFixed(1)+"%";
 // A spot reading more than this much wider than new tribar can't be a real
 // width: bars over a bright floor (gravel, debris, glare) or photographed at
-// an angle read wide, and in the C10 photos the same bar read 13-27% wider
-// over gravel than over the dark pit beside it.
+// an angle read wide: in the C10 photos, bars reading 8-26% loss over the
+// dark pit read up to 27% wider than new over gravel. tribar.js now drops
+// most of those readings; this catches what gets through.
 const WIDER_THAN_NEW = -0.10;
 const widerWarning = loss => "This spot reads " + pct(-loss) + " wider than new tribar, which a corroded bar can't be. " +
   "Bars over a bright floor (gravel, debris, glare) or photographed at an angle read too wide. " +

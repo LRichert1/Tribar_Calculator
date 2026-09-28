@@ -22,10 +22,12 @@
  *    used (followBars), before the reference's shadow rejection. Where the
  *    pit floor is brighter than the bars (gravel, debris, glare on water) the
  *    reference measures bright bits between the bars as if they were bars;
- *    in the gravel band of a C10 photo most readings sat on stones. On the
- *    five C44 photos this keeps 96-98% of readings, leaves the median window
- *    ratio unchanged (0.4665 vs 0.4666) and moves one window 3 points (it
- *    drops a glint running down one bar's edge); the rest move under 1.
+ *    in the gravel band of a C10 photo most readings sat on stones. Readings
+ *    on bars over such a floor that come out much wider than the bars over
+ *    dark floor are dropped too: lit gravel merges into a bar's edges. On
+ *    the five C44 photos this keeps 96-98% of readings, leaves the median
+ *    window ratio unchanged (0.4665) and moves one window 3 points (it drops
+ *    a glint running down one bar's edge); the rest move under 1.
  *    measure(..., {reference: true}) turns it off.
  *
  * Loads as a browser/worker script (self.Tribar) or a Node module.
@@ -40,6 +42,8 @@ const MIN_MODULATION = 0.30;   // bars must be optically resolved
 const MIN_SAMPLES    = 120;    // enough edge measurements in the window
 const MIN_RATIO      = 0.15;   // below this, almost certainly a detection failure
 const MAX_RATIO      = 0.62;   // above this, likely locked onto gap not bar
+const MAX_FLOOR_LEVEL = 0.25;  // floor beside a bar brighter than this is a bright floor (followBars)
+const WIDER_OVER_BRIGHT_FLOOR = 1.15;  // ...where a reading this much wider than over dark floor is dropped
 
 const NX = 4, NY = 3;          // measurement windows across x down
 const f32 = Math.fround;
@@ -392,6 +396,21 @@ function lineFit(pts) {
   return { at: (y) => a + b * (y - ym) };
 }
 
+// How bright the floor is around a reading at (x, y) with bar spacing p: in
+// the 2*band-row profile across 1.5 spacings either side, where the 30th
+// percentile sits between the 5th and 95th (0 = as dark as the darkest).
+// Over a dark pit the gaps are over 30% of the width and this is near 0;
+// over gravel or glare only the bars' shadows are dark and it is around 0.3.
+function floorLevel(gr, w, y, band, x, p) {
+  const lo = Math.max(0, Math.ceil(x - 1.5 * p)), hi = Math.min(w - 1, Math.floor(x + 1.5 * p));
+  const v = new Float64Array(hi - lo + 1);
+  for (let yy = y - band; yy < y + band; yy++)
+    for (let k = lo, o = yy * w; k <= hi; k++) v[k - lo] += gr[o + k];
+  v.sort();
+  const at = (q) => v[Math.floor(q * (v.length - 1))];
+  return (at(0.3) - at(0.05)) / Math.max(1e-6, at(0.95) - at(0.05));
+}
+
 // Which readings follow a bar. Not in the reference; see the header. Where
 // the floor of the pit is brighter than the bars (gravel, debris, glare on
 // standing water) the half-max readings land on bright bits between the bars,
@@ -406,8 +425,18 @@ function lineFit(pts) {
 //  3. a reading off the tracks still counts if a track runs within 15% of a
 //     bar spacing of its centre (a pit in one edge moves the centre sideways)
 //     and it is no brighter than the bar there (not a glint).
-// S: one window's samples [y, x, width, pitch, ratio, contrast, top], scan
-// rows `stride` px apart. Returns a keep flag per sample.
+//  4. over a bright floor, a reading more than 15% wider than the median of
+//     the readings over dark floor in the window (or than new tribar, if
+//     there are too few of those) is dropped. Lit gravel next to a rusty bar
+//     is as bright as the bar and merges into its edges: in the C10 photos
+//     bars reading 8-26% loss over the dark pit read as much as 27% wider
+//     than new over the gravel. Only wide readings go, so the thinnest spot
+//     on a bar is never dropped by this; over the lit wet floor in C72 the
+//     readings were narrower, not wider, and are kept. The floor level is the
+//     samples' 8th value (floorLevel), when given, smoothed over the bar's
+//     readings within 3 scan rows.
+// S: one window's samples [y, x, width, pitch, ratio, contrast, top, floor
+// level], scan rows `stride` px apart. Returns a keep flag per sample.
 function followBars(S, stride) {
   const n = S.length, keep = new Uint8Array(n), onTrack = new Uint8Array(n);
   const rows = new Map();
@@ -485,6 +514,21 @@ function followBars(S, stride) {
     if (near.length >= 4 && Math.abs(x - lineFit(near).at(y)) <= 0.15 * p &&
         S[i][6] <= 1.3 * median(near.map((q) => q[6]))) keep[i] = 1;
   }
+  // 4. over a bright floor, a reading much wider than the bars over dark floor
+  if (n && S[0].length > 7) {
+    const level = new Float64Array(n), dark = [];
+    for (let i = 0; i < n; i++) {
+      if (!keep[i]) continue;
+      const [y, x, , p] = S[i], near = [];
+      for (let yy = y - 3 * stride; yy <= y + 3 * stride; yy += stride)
+        for (const j of rows.get(yy) || []) if (keep[j] && Math.abs(S[j][1] - x) <= 0.3 * p) near.push(S[j][7]);
+      level[i] = median(near);
+      if (level[i] <= MAX_FLOOR_LEVEL) dark.push(S[i][4]);
+    }
+    const ref = dark.length >= 20 ? median(dark) : BASELINE_RATIO;
+    for (let i = 0; i < n; i++)
+      if (keep[i] && level[i] > MAX_FLOOR_LEVEL && S[i][4] > WIDER_OVER_BRIGHT_FLOOR * ref) keep[i] = 0;
+  }
   return keep;
 }
 
@@ -507,6 +551,7 @@ function analyzeWindow(gr, w, x0, x1, y0, y1, band = 4, stride = 6, onBars = fal
     for (const [c, bw, con, top] of r.dets) S.push([r.y, x0 + c, bw, r.pitch, bw / r.pitch, con, top]);
   const nraw = S.length;
   if (onBars) {
+    for (const sm of S) sm.push(floorLevel(gr, w, sm[0], band, sm[1], sm[3]));
     const on = followBars(S, stride);
     S = S.filter((_, i) => on[i]);
     if (!S.length) return { ok: false, reason: 'no readings follow a bar', nraw, nbar: 0, mod_med: median(rows.map((r) => r.mod)) };
@@ -602,7 +647,7 @@ function measure(gray, w, h, opts = {}) {
       else if (few) {
         why = 'too few samples (' + n + ')';
         if (r.nraw >= MIN_SAMPLES && r.nbar < 0.75 * r.nraw)
-          why += ' - only ' + r.nbar + ' of ' + r.nraw + ' readings follow a bar, the rest are off the bars (bright floor, debris or glare?)';
+          why += ' - only ' + r.nbar + ' of ' + r.nraw + ' readings are on bars over a dark pit, the rest are off the bars or over a bright floor (gravel, debris or glare?)';
       }
       else if (med < MIN_RATIO)  why = 'ratio ' + med.toFixed(2) + ' implausible - locked onto highlight/gap';
       else if (med > MAX_RATIO)  why = 'ratio ' + med.toFixed(2) + ' implausible - locked onto gap';
