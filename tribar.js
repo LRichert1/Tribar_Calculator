@@ -482,6 +482,8 @@ function measure(gray, w, h, opts = {}) {
       // takes every 3rd sample, which can land on the same bar in every row):
       // [y, bar centre x, measured width, local pitch]
       rec.marks = r.samples.filter((sm) => (sm[0] - y0 - 4) % 18 === 0).map((sm) => [sm[0], sm[1], sm[2], sm[3]]);
+      // every width reading, for measuring a tapped spot
+      rec.samples = r.samples.map((sm) => [sm[0], sm[1], sm[2], sm[3]]);
       windows.push(rec);
     }
   progress(1, 'Done');
@@ -518,6 +520,21 @@ function traceBar(marks, x, y, baseline = BASELINE_RATIO) {
   return { n: bar.length, ratio, loss: 1 - ratio / baseline, marks: bar };
 }
 
+// The inspector's "worst spot on the worst bar": trace the bar under (x, y)
+// through `samples` and measure its width over one bar-spacing of length
+// centred on the tap (median of the readings there). The whole bar's median
+// comes back too, for comparison. On new C44 bars a tapped spot reads within
+// about +/-9 points; the whole-bar median within about +/-5.
+function measureSpot(samples, x, y, baseline = BASELINE_RATIO) {
+  const bar = traceBar(samples, x, y, baseline);
+  if (!bar) return null;
+  const pitch = median(bar.marks.map((m) => m[3]));
+  const spot = bar.marks.filter((m) => Math.abs(m[0] - y) <= pitch / 2);
+  if (!spot.length) return null;
+  const ratio = median(spot.map((m) => m[2] / m[3]));
+  return { n: spot.length, ratio, loss: 1 - ratio / baseline, spot, bar };
+}
+
 // tribar_measure.report over a set of windows (possibly from several
 // photos): typical and worst-area width loss, and the band to report,
 // taken from the worst-area figure as the reference does. Width loss is
@@ -531,7 +548,7 @@ function summarize(windows, baseline = BASELINE_RATIO) {
 }
 
 const api = {
-  BASELINE_RATIO, grade, grayFromRGBA, measure, summarize, traceBar,
+  BASELINE_RATIO, grade, grayFromRGBA, measure, summarize, traceBar, measureSpot,
   // internals, for test/parity.py
   cvRound, percentileSorted, blur1d, detrend, pitchFFT, rowMeasure, halfmax, analyzeWindow,
   rotate, angleScore, findBars, turn90, ANGLES,

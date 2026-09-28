@@ -9,7 +9,7 @@ const rgba = new Uint8Array(fs.readFileSync(rgbaPath));
 const gray = T.grayFromRGBA(rgba, W, H);
 const grayExact = Buffer.compare(Buffer.from(gray.buffer, gray.byteOffset, gray.length), fs.readFileSync(grayPath)) === 0;
 
-const strip = (res) => ({ ...res, windows: res.windows.map(({ marks, ...rest }) => rest) });
+const strip = (res) => ({ ...res, windows: res.windows.map(({ marks, samples, ...rest }) => rest) });
 const t0 = Date.now();
 const auto = T.measure(gray, W, H);
 const ms = Date.now() - t0;
