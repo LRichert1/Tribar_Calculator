@@ -112,6 +112,7 @@
   .stat b{display:block;font-size:19px}
   .stat span{font-size:12.5px;color:var(--muted)}
   .empty{color:var(--muted);font-size:14px;margin:4px 0}
+  .warn{color:var(--danger);background:var(--danger-bg);border-radius:8px;padding:8px 11px;font-size:13.5px;margin:12px 0 0}
 
   /* ---------- Saved readings ---------- */
   .reading{display:flex;gap:12px;align-items:center;padding:10px 2px;border-top:1px solid var(--line)}
@@ -221,6 +222,14 @@ const DISPLAY_MAX = 1400;    // width the straightened photo is drawn at
 const BAND_COLORS = {"0-10%":"#2e7d32","10-20%":"#689f38","20-30%":"#f9a825","30-40%":"#ef6c00","40-50%":"#d84315","50%+":"#b71c1c"};
 const BAND_TEXT = {"0-10%":"0 to 10%","10-20%":"10 to 20%","20-30%":"20 to 30%","30-40%":"30 to 40%","40-50%":"40 to 50%","50%+":"50% or more"};
 const pct = v => (100*v).toFixed(1)+"%";
+// A spot reading more than this much wider than new tribar can't be a real
+// width: bars over a bright floor (gravel, debris, glare) or photographed at
+// an angle read wide, and in the C10 photos the same bar read 13-27% wider
+// over gravel than over the dark pit beside it.
+const WIDER_THAN_NEW = -0.10;
+const widerWarning = loss => "This spot reads " + pct(-loss) + " wider than new tribar, which a corroded bar can't be. " +
+  "Bars over a bright floor (gravel, debris, glare) or photographed at an angle read too wide. " +
+  "Tap a spot where the pit behind the bar is dark, or retake the photo flatter.";
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const STATE = {
@@ -244,7 +253,7 @@ function restore(){
 let _toastT=null;
 function toast(msg){
   const t=$("#toast"); t.textContent=msg; t.classList.add("show");
-  clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove("show"),2400);
+  clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove("show"),Math.max(2400, 45*msg.length));   // time to read it
 }
 
 function locLabel(r){
@@ -440,10 +449,12 @@ function tapBar(ph, ev){
       : "No bar readings there. Where the floor under the bars is bright (gravel, debris, glare) their edges can't be read; tap a bar where it has red width lines.");
     return;
   }
+  $("#toast").classList.remove("show");   // an earlier "not measured here" no longer applies
   if (ph.pick && ph.pick.spot.some(m => t.spot.includes(m))) ph.pick = null;   // tapped the picked spot again
   else {
     ph.pick = t;
-    if (t.n < 4) toast("Only " + t.n + " readings at that spot. Tap a little up or down the bar, or retake closer and flatter.");
+    if (t.loss < WIDER_THAN_NEW) toast("This spot reads " + pct(-t.loss) + " wider than new tribar, so it isn't a real width. See the note under Result.");
+    else if (t.n < 4) toast("Only " + t.n + " readings at that spot. Tap a little up or down the bar, or retake closer and flatter.");
   }
   drawOverlay(ph); photoLine(ph); renderResult();
 }
@@ -523,6 +534,7 @@ function renderResult(){
     el("div", {class:"bandBig", text:BAND_TEXT[band], style:"background:" + BAND_COLORS[band]}),
     el("div", {class:"bandCap"}, [el("b", {text:"Cross-section loss"}), el("br"), "at the worst spot you tapped"]),
   ]));
+  if (w.loss < WIDER_THAN_NEW) card.appendChild(el("p", {class:"warn", text:widerWarning(w.loss)}));
   card.appendChild(el("div", {class:"stats"}, [
     stat(pct(w.loss), "Worst spot width loss" + (done.length > 1 ? " (" + worst.name + ")" : "")),
     stat(pct(w.bar.loss), "That bar overall (median along it)"),
