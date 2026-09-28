@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tribar Corrosion</title>
+<!-- Home-screen app (PWA) — these are inert when opened as a local file -->
+<meta name="theme-color" content="#1f4e79">
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tribar">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<style>
+  :root{
+    --bg:#f4f6f8; --panel:#ffffff; --ink:#1f2933; --muted:#6b7785;
+    --line:#d9e0e6; --line-strong:#b9c4cd;
+    --brand:#1f4e79; --brand-700:#16395a; --brand-50:#eaf1f8;
+    --accent:#2f80b8;
+    --danger:#b42318; --danger-bg:#fdecea;
+    --shadow:0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+    color:var(--ink); background:var(--bg); font-size:15px; line-height:1.45;
+  }
+  button{font-family:inherit}
+  input,select{font-family:inherit;font-size:15px;color:var(--ink)}
+  .wrap{max-width:1040px;margin:0 auto;padding:20px 18px 60px}
+
+  /* ---------- Top brand bar ---------- */
+  .appbar{
+    background:var(--brand); color:#fff;
+    display:flex;align-items:center;gap:12px;
+    padding:12px 18px; box-shadow:var(--shadow);
+    /* sit clear of the iPhone/iPad status bar when launched from the Home Screen */
+    padding-top:calc(12px + env(safe-area-inset-top, 0px));
+    padding-left:calc(18px + env(safe-area-inset-left, 0px));
+    padding-right:calc(18px + env(safe-area-inset-right, 0px));
+  }
+  .appbar .logo{font-weight:700;letter-spacing:.3px}
+  .appbar .sub{opacity:.8;font-size:13px}
+  .appbar .spacer{flex:1}
+  .appbar .siteTag{
+    background:rgba(255,255,255,.14); padding:4px 10px;border-radius:999px;
+    font-size:13px; display:none; align-items:center; gap:6px;
+  }
+
+  /* ---------- Buttons ---------- */
+  .btn{
+    border:1px solid var(--line-strong); background:#fff; color:var(--ink);
+    padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;
+    display:inline-flex;align-items:center;gap:7px;transition:.12s;
+  }
+  .btn:hover{background:#f3f6f9}
+  .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  .btn.primary:hover{background:var(--brand-700)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.sm{padding:6px 10px;font-size:13px}
+  .btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+  .btn.ghost:hover{background:var(--danger-bg);color:var(--danger)}
+
+  /* ---------- Cards ---------- */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);
+        padding:18px 20px;margin-bottom:16px}
+  .card h2{margin:0;font-size:17px;color:var(--brand-700)}
+  .hdr{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .hdr .spacer{flex:1}
+  .count{color:var(--muted);font-weight:400;font-size:14px}
+  .tip{color:var(--muted);font-size:13px;margin:0 0 12px}
+
+  /* ---------- Location ---------- */
+  .loc{display:grid;grid-template-columns:1.1fr 1.4fr .8fr .8fr 1fr;gap:12px}
+  @media(max-width:640px){.loc{grid-template-columns:1fr 1fr}}
+  .f label{display:block;font-weight:600;font-size:13px;margin-bottom:5px}
+  .f .hint{font-weight:400;color:var(--muted)}
+  .text{width:100%;padding:10px 11px;border:1px solid var(--line-strong);border-radius:8px;background:#fff}
+  .text:focus{outline:2px solid var(--brand-50);border-color:var(--brand)}
+  .note{margin-top:12px}
+
+  /* ---------- Photos ---------- */
+  .photo{border:1px solid var(--line);border-radius:9px;margin:12px 0 0;overflow:hidden;background:#fff}
+  .ph-head{display:flex;align-items:center;gap:8px;padding:6px 6px 6px 12px;font-size:13.5px}
+  .ph-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .stage{position:relative;line-height:0;background:#111}
+  .stage canvas{width:100%;height:auto;display:block}
+  .stage canvas.widths{position:absolute;left:0;top:0;height:100%;pointer-events:none}
+  .win{position:absolute;border:2px solid #9aa5b1;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .win.dim{background:rgba(15,20,25,.58)}
+  .win .lbl{position:absolute;left:4px;top:4px;color:#fff;background:#9aa5b1;font-weight:700;font-size:12.5px;
+            line-height:1.35;padding:1px 6px;border-radius:4px;white-space:nowrap}
+  .bar{height:6px;background:var(--brand-50)}
+  .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+  .ph-line{padding:8px 12px;font-size:13px;color:var(--muted)}
+  .ph-line.err{color:var(--danger)}
+  .marks{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);font-weight:600}
+
+  /* ---------- Result ---------- */
+  .result .top{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .bandBig{font-size:30px;font-weight:800;padding:6px 16px;border-radius:10px;color:#fff;background:#9aa5b1;white-space:nowrap}
+  .bandCap{color:var(--muted);font-size:13.5px;line-height:1.35}
+  .bandCap b{color:var(--ink);font-size:15px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
+  .stat{background:var(--bg);border-radius:8px;padding:8px 11px}
+  .stat b{display:block;font-size:19px}
+  .stat span{font-size:12.5px;color:var(--muted)}
+  .empty{color:var(--muted);font-size:14px;margin:4px 0}
+
+  /* ---------- Saved readings ---------- */
+  .reading{display:flex;gap:12px;align-items:center;padding:10px 2px;border-top:1px solid var(--line)}
+  .reading:first-child{border-top:none}
+  .reading .what{flex:1;min-width:0}
+  .reading .where{font-weight:600}
+  .reading .meta{color:var(--muted);font-size:12.5px}
+  .chip{color:#fff;font-weight:700;border-radius:999px;padding:3px 10px;font-size:13px;white-space:nowrap;min-width:86px;text-align:center}
+
+  .foot{color:var(--muted);font-size:12.5px;margin:6px 2px 0}
+
+  .toast{
+    position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:var(--brand-700);color:#fff;padding:11px 18px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.25);
+    opacity:0;pointer-events:none;transition:.25s;font-size:14px;z-index:50;max-width:90vw;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<div class="appbar">
+  <span class="logo">Johnson Engineering</span>
+  <span class="sub">Tribar Corrosion</span>
+  <span class="spacer"></span>
+  <span class="siteTag" id="siteTag">📍 <b id="siteTagName"></b></span>
+</div>
+
+<main class="wrap">
+  <!-- ============ LOCATION ============ -->
+  <section class="card">
+    <div class="hdr"><h2>Location</h2></div>
+    <div class="loc">
+      <div class="f"><label for="fSite">Site</label><input class="text" id="fSite" placeholder="e.g. C072" autocomplete="off"></div>
+      <div class="f"><label for="fBarn">Barn</label><input class="text" id="fBarn" placeholder="e.g. Farrowing 2" autocomplete="off"></div>
+      <div class="f"><label for="fRoom">Room</label><input class="text" id="fRoom" inputmode="numeric" autocomplete="off"></div>
+      <div class="f"><label for="fRow">Row</label><input class="text" id="fRow" inputmode="numeric" autocomplete="off"></div>
+      <div class="f"><label for="fSide">Side</label>
+        <select class="text" id="fSide"><option value="">—</option><option>Front</option><option>Back</option></select></div>
+    </div>
+    <div class="f note"><label for="fNote">Note <span class="hint">(optional)</span></label><input class="text" id="fNote" autocomplete="off"></div>
+  </section>
+
+  <!-- ============ PHOTOS ============ -->
+  <section class="card">
+    <div class="hdr">
+      <h2>Photos</h2><span class="spacer"></span>
+      <button class="btn primary" id="shootBtn">📷 Take photo</button>
+      <button class="btn" id="pickBtn">🖼 Choose photos</button>
+    </div>
+    <p class="tip">Shoot square-on to the floor, indoors, no flash, with the bars running up-and-down or across the frame.
+      A dark pit behind the bars reads best. Sun or flash glare on wet bars gives bad readings.</p>
+    <div id="photos"></div>
+    <div id="photoTools" hidden style="margin-top:12px">
+      <p class="tip" style="margin-bottom:6px">Tap a window to leave it out: galvanized replacement bars, glare, or anything that isn’t tribar.
+        Tap it again to use it.</p>
+      <label class="marks"><input type="checkbox" id="marksBox" checked> Show measured widths (red)</label>
+    </div>
+  </section>
+
+  <!-- ============ RESULT ============ -->
+  <section class="card result" id="resultCard"></section>
+
+  <!-- ============ SAVED READINGS ============ -->
+  <section class="card">
+    <div class="hdr">
+      <h2>Saved readings <span class="count" id="savedCount"></span></h2><span class="spacer"></span>
+      <button class="btn sm primary" id="csvBtn">⬇ Export CSV</button>
+      <button class="btn sm" id="clearBtn">Clear all</button>
+    </div>
+    <div id="saved"></div>
+  </section>
+
+  <p class="foot">Width loss = 1 − (bar width ÷ bar pitch) ÷ 0.4686, the width-to-pitch ratio of new tribar measured at C44.
+    It is reported 1:1 as cross-section loss. The band comes from the worst-area width (25th percentile of each window),
+    as in tribar_measure.py.</p>
+</main>
+
+<div class="toast" id="toast"></div>
+<input type="file" id="shootInput" accept="image/*" capture="environment" hidden>
+<input type="file" id="pickInput" accept="image/*" multiple hidden>
+
+<script src="./tribar.js"></script>
+<script>
+"use strict";
+
+const $ = sel => document.querySelector(sel);
+const el = (tag, props={}, kids=[]) => {
+  const n = document.createElement(tag);
+  for (const k in props){
+    if (k==="class") n.className = props[k];
+    else if (k==="text") n.textContent = props[k];
+    else if (k.startsWith("on") && typeof props[k]==="function") n.addEventListener(k.slice(2), props[k]);
+    else if (props[k]!==null && props[k]!==undefined) n.setAttribute(k, props[k]);
+  }
+  for (const c of [].concat(kids)) if (c) n.appendChild(typeof c==="string"?document.createTextNode(c):c);
+  return n;
+};
+
+const STORE_KEY = "tribar.v1";
+const MAX_PIXELS = 16e6;     // iOS Safari can't hold a bigger canvas; larger photos are scaled to fit
+const DISPLAY_MAX = 1400;    // width the straightened photo is drawn at
+const BAND_COLORS = {"0-10%":"#2e7d32","10-20%":"#689f38","20-30%":"#f9a825","30-40%":"#ef6c00","40-50%":"#d84315","50%+":"#b71c1c"};
+const BAND_TEXT = {"0-10%":"0 to 10%","10-20%":"10 to 20%","20-30%":"20 to 30%","30-40%":"30 to 40%","40-50%":"40 to 50%","50%+":"50% or more"};
+const pct = v => (100*v).toFixed(1)+"%";
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+const STATE = {
+  loc: {site:"", barn:"", room:"", row:"", side:"", note:""},
+  photos: [],      // the reading being taken: {id, name, status, msg, progress, result, excluded:Set, ...}
+  readings: [],    // saved readings, newest first
+  marks: true,
+};
+
+function persist(){
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify({loc:STATE.loc, readings:STATE.readings, marks:STATE.marks})); }
+  catch(e){ toast("Couldn’t save on this device: "+e.message); }
+}
+function restore(){
+  try{
+    const d = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+    if (d){ Object.assign(STATE.loc, d.loc||{}); STATE.readings = d.readings||[]; if (d.marks===false) STATE.marks=false; }
+  }catch(e){/* start fresh */}
+}
+
+let _toastT=null;
+function toast(msg){
+  const t=$("#toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove("show"),2400);
+}
+
+function locLabel(r){
+  return [r.barn, r.room && "Room "+r.room, r.row && "Row "+r.row, r.side && r.side+" side"].filter(Boolean).join(" · ") || "No location";
+}
+
+/* ------------------------------------------------------------------ *
+ *  Measuring: decode on the page, measure in a worker
+ * ------------------------------------------------------------------ */
+let worker = null;               // null = not started, false = unavailable (e.g. opened as a local file)
+const jobs = new Map(); let nextJob = 1;
+
+function startWorker(){
+  if (worker !== null) return worker;
+  try{
+    worker = new Worker("./worker.js");
+    worker.onmessage = e => {
+      const m = e.data, job = jobs.get(m.id); if (!job) return;
+      if (m.progress != null) job.onProgress(m.progress, m.msg);
+      else { jobs.delete(m.id); if (m.error) job.reject(new Error(m.error)); else job.resolve(m.result); }
+    };
+    worker.onerror = () => {      // couldn't load: finish any pending jobs on the page instead
+      worker = false;
+      for (const [id, job] of jobs){ jobs.delete(id); runOnPage(job); }
+    };
+  }catch(e){ worker = false; }
+  return worker;
+}
+function runOnPage(job){
+  setTimeout(() => {
+    try{ job.resolve(Tribar.measure(job.gray, job.w, job.h, {onProgress: job.onProgress})); }
+    catch(e){ job.reject(e); }
+  }, 30);
+}
+function measure(gray, w, h, onProgress){
+  return new Promise((resolve, reject) => {
+    const job = {gray, w, h, onProgress, resolve, reject}, wk = startWorker();
+    if (!wk) return runOnPage(job);
+    const id = nextJob++; jobs.set(id, job);
+    wk.postMessage({id, gray, w, h});
+  });
+}
+
+// Decode with the camera's rotation applied and no colour-profile
+// conversion (OpenCV reads the raw pixel values, so the baseline assumes them).
+async function decodePhoto(file){
+  let img;
+  try{ img = await createImageBitmap(file, {imageOrientation:"from-image", colorSpaceConversion:"none"}); }
+  catch(e){
+    try{ img = await createImageBitmap(file); }
+    catch(e2){
+      img = await new Promise((res, rej) => {
+        const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("not a readable image"));
+        im.src = URL.createObjectURL(file);
+      });
+    }
+  }
+  const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+  const s = Math.min(1, Math.sqrt(MAX_PIXELS / (W*H))), w = Math.round(W*s), h = Math.round(H*s);
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d", {willReadFrequently:true});
+  ctx.drawImage(img, 0, 0, w, h);
+  const gray = Tribar.grayFromRGBA(ctx.getImageData(0, 0, w, h).data, w, h);
+  cv.width = cv.height = 0;
+  return {img, w, h, gray, fullSize: s < 1 ? [W, H] : null};
+}
+
+let queue = Promise.resolve();
+function addFiles(files){
+  for (const file of files){
+    const ph = {id:uid(), name:file.name || "Photo", status:"queued", msg:"Waiting…", progress:0, excluded:new Set(), file};
+    STATE.photos.push(ph);
+    queue = queue.then(() => processPhoto(ph));
+  }
+  renderPhotos(); renderResult();
+}
+async function processPhoto(ph){
+  if (!STATE.photos.includes(ph)) return;          // removed while waiting
+  ph.status = "measuring"; ph.msg = "Reading photo"; renderPhotos();
+  try{
+    const d = await decodePhoto(ph.file);
+    Object.assign(ph, {img:d.img, w:d.w, h:d.h, fullSize:d.fullSize});
+    const t0 = performance.now();
+    ph.result = await measure(d.gray, d.w, d.h, (p, msg) => { ph.progress = p; ph.msg = msg; showProgress(ph); });
+    ph.secs = (performance.now() - t0) / 1000;
+    ph.status = "done";
+  }catch(e){
+    ph.status = "error"; ph.msg = "Couldn’t measure this photo: " + e.message;
+    if (ph.img && ph.img.close) ph.img.close();
+    ph.img = null;
+  }
+  ph.file = null;
+  renderPhotos(); renderResult();
+}
+function removePhoto(ph){
+  STATE.photos = STATE.photos.filter(p => p !== ph);
+  if (ph.img && ph.img.close) ph.img.close();
+  renderPhotos(); renderResult();
+}
+
+/* ------------------------------------------------------------------ *
+ *  Photo cards: the straightened photo with its 12 windows
+ * ------------------------------------------------------------------ */
+const SHORT_WHY = [["bars not", "no bars found"], ["low contrast", "low contrast"], ["too few", "too few edges"],
+                   ["highlight", "glare?"], ["gap", "gap?"]];
+const shortWhy = why => (SHORT_WHY.find(([k]) => why.includes(k)) || [0, "not measured"])[1];
+
+// Draw the photo exactly as it was measured: turned 90° if the bars ran
+// across, then rotated like cv2.warpAffine(getRotationMatrix2D(centre, angle)).
+function drawPhoto(ph){
+  const r = ph.result, s = Math.min(1, DISPLAY_MAX / r.width);
+  const base = el("canvas"), widths = el("canvas", {class:"widths"});
+  base.width = widths.width = Math.round(r.width * s); base.height = widths.height = Math.round(r.height * s);
+  const ctx = base.getContext("2d"), a = r.angle * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a);
+  const cx = r.width / 2, cy = r.height / 2;
+  ctx.fillStyle = "#111"; ctx.fillRect(0, 0, base.width, base.height);
+  ctx.setTransform(s, 0, 0, s, 0, 0);
+  ctx.transform(c, -sn, sn, c, (1 - c) * cx - sn * cy, sn * cx + (1 - c) * cy);
+  if (r.turned) ctx.transform(0, 1, -1, 0, ph.h, 0);
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(ph.img, 0, 0, ph.w, ph.h);
+  if (ph.img.close) ph.img.close();
+  ph.img = null;
+  // one tappable box per measurement window, positioned in % so it tracks the photo at any screen size
+  const pctPos = (v, of) => (100 * v / of) + "%";
+  const wins = r.windows.map(w => {
+    const [x0, x1, y0, y1] = w.box;
+    return el("div", {class:"win", onclick:() => tapWindow(ph, w),
+      style:"left:" + pctPos(x0, r.width) + ";top:" + pctPos(y0, r.height) +
+            ";width:" + pctPos(x1 - x0, r.width) + ";height:" + pctPos(y1 - y0, r.height)}, [el("span", {class:"lbl"})]);
+  });
+  Object.assign(ph, {base, widths, wins, scale:s, stage:el("div", {class:"stage"}, [base, widths, ...wins])});
+  drawOverlay(ph);
+}
+
+function drawOverlay(ph){
+  const r = ph.result, ctx = ph.widths.getContext("2d"), s = ph.scale;
+  ctx.clearRect(0, 0, ph.widths.width, ph.widths.height);
+  ctx.strokeStyle = "rgba(255,45,45,.9)"; ctx.lineWidth = Math.max(1, 2 * s);
+  r.windows.forEach((w, i) => {
+    const out = ph.excluded.has(w.cell), box = ph.wins[i], lbl = box.firstChild;
+    if (STATE.marks && w.marks && !out){
+      ctx.beginPath();
+      for (const [y, x, bw] of w.marks){ ctx.moveTo((x - bw / 2) * s, y * s); ctx.lineTo((x + bw / 2) * s, y * s); }
+      ctx.stroke();
+    }
+    let color = "#9aa5b1";
+    if (!w.ok || out) lbl.textContent = out ? "left out" : shortWhy(w.why);
+    else {
+      const loss = 1 - w.ratio / Tribar.BASELINE_RATIO;
+      color = BAND_COLORS[Tribar.grade(loss)]; lbl.textContent = pct(loss);
+    }
+    box.className = "win" + (!w.ok || out ? " dim" : "");
+    box.style.borderColor = lbl.style.background = color;
+    box.title = !w.ok ? "Not measured: " + w.why : out ? "Left out. Tap to use it again" : "Tap to leave this window out";
+  });
+}
+
+function tapWindow(ph, w){
+  if (!w.ok){ toast("Not measured: " + w.why); return; }
+  if (ph.excluded.has(w.cell)) ph.excluded.delete(w.cell); else ph.excluded.add(w.cell);
+  drawOverlay(ph); photoLine(ph); renderResult();
+}
+
+function usableWindows(ph){ return ph.result.windows.filter(w => w.ok && !ph.excluded.has(w.cell)); }
+
+function photoLine(ph){
+  const r = ph.result, measurable = r.windows.filter(w => w.ok).length, sum = Tribar.summarize(usableWindows(ph));
+  const bits = [(r.turned ? "Turned 90°, straightened " : "Straightened ") + (r.angle >= 0 ? "+" : "") + r.angle.toFixed(2) + "°",
+                measurable + " of " + r.windows.length + " windows measurable"];
+  if (ph.excluded.size) bits.push(ph.excluded.size + " left out");
+  if (sum) bits.push("typical " + pct(sum.typical) + ", worst-area " + pct(sum.worst));
+  if (ph.fullSize) bits.push("measured at " + (ph.w * ph.h / 1e6).toFixed(1) + " of " + (ph.fullSize[0] * ph.fullSize[1] / 1e6).toFixed(1) + " MP");
+  bits.push(ph.secs.toFixed(1) + " s");
+  ph.lineEl.textContent = bits.join(" · ");
+}
+
+function showProgress(ph){
+  if (ph.barEl){ ph.barEl.style.width = (100 * ph.progress) + "%"; ph.msgEl.textContent = ph.msg; }
+}
+
+function renderPhotos(){
+  const box = $("#photos"); box.innerHTML = "";
+  for (const ph of STATE.photos){
+    const card = el("div", {class:"photo"}, [el("div", {class:"ph-head"}, [
+      el("span", {class:"ph-name", text:ph.name}),
+      el("button", {class:"btn sm ghost", title:"Remove photo", text:"✕", onclick:() => removePhoto(ph)}),
+    ])]);
+    if (ph.status === "done"){
+      if (!ph.stage) drawPhoto(ph);
+      card.appendChild(ph.stage);
+      card.appendChild(ph.lineEl = el("div", {class:"ph-line"}));
+      photoLine(ph);
+    } else if (ph.status === "error"){
+      card.appendChild(el("div", {class:"ph-line err", text:ph.msg}));
+    } else {
+      ph.barEl = el("i"); ph.msgEl = el("div", {class:"ph-line", text:ph.msg});
+      card.appendChild(el("div", {class:"bar"}, [ph.barEl])); card.appendChild(ph.msgEl);
+      showProgress(ph);
+    }
+    box.appendChild(card);
+  }
+  $("#photoTools").hidden = !STATE.photos.some(p => p.status === "done");
+}
+
+/* ------------------------------------------------------------------ *
+ *  Result for the current reading (all its photos pooled)
+ * ------------------------------------------------------------------ */
+function currentSummary(){
+  const done = STATE.photos.filter(p => p.status === "done");
+  const windows = done.flatMap(usableWindows);
+  return {done, sum: Tribar.summarize(windows),
+          measurable: done.reduce((n, p) => n + p.result.windows.filter(w => w.ok).length, 0),
+          total: done.reduce((n, p) => n + p.result.windows.length, 0)};
+}
+
+function renderResult(){
+  const card = $("#resultCard"); card.innerHTML = "";
+  const {done, sum, measurable, total} = currentSummary();
+  const busy = STATE.photos.some(p => p.status === "queued" || p.status === "measuring");
+  card.appendChild(el("div", {class:"hdr"}, [el("h2", {text:"Result"})]));
+  if (!sum){
+    card.appendChild(el("p", {class:"empty", text: busy ? "Measuring…" :
+      done.length ? "No usable windows. Retake the photo (see the tips above) or put back a window you left out." :
+      "Take or choose a photo of the tribar at this location."}));
+    return;
+  }
+  card.appendChild(el("div", {class:"top"}, [
+    el("div", {class:"bandBig", text:BAND_TEXT[sum.band], style:"background:" + BAND_COLORS[sum.band]}),
+    el("div", {class:"bandCap"}, [el("b", {text:"Cross-section loss"}), el("br"),
+      "report band, from the worst-area width loss"]),
+  ]));
+  const stat = (v, label) => el("div", {class:"stat"}, [el("b", {text:v}), el("span", {text:label})]);
+  card.appendChild(el("div", {class:"stats"}, [
+    stat(pct(sum.worst), "Worst-area width loss"),
+    stat(pct(sum.typical), "Typical width loss"),
+    stat(sum.ratio.toFixed(4), "Median width ÷ pitch (new " + Tribar.BASELINE_RATIO + ")"),
+    stat(sum.n + " of " + total, "Windows used" + (measurable > sum.n ? " (" + (measurable - sum.n) + " left out)" : "")),
+  ]));
+  card.appendChild(el("div", {class:"hdr", style:"margin:0"}, [
+    el("span", {class:"tip", style:"margin:0;flex:1", text:"Saves under: " + [STATE.loc.site, locLabel(STATE.loc)].filter(Boolean).join(" · ")}),
+    el("button", {class:"btn", text:"Discard", onclick:discardReading}),
+    el("button", {class:"btn primary", text:"✓ Save reading", disabled: busy ? "" : null, onclick:saveReading}),
+  ]));
+}
+
+function discardReading(){
+  if (!confirm("Discard the photos for this reading?")) return;
+  STATE.photos = []; renderPhotos(); renderResult();
+}
+
+function saveReading(){
+  const {done, sum, measurable, total} = currentSummary();
+  if (!sum) return;
+  STATE.readings.unshift({
+    id:uid(), savedAt:new Date().toISOString(), ...STATE.loc,
+    band:sum.band, worst:sum.worst, typical:sum.typical, ratio:sum.ratio,
+    used:sum.n, measurable, total, baseline:Tribar.BASELINE_RATIO,
+    photos: done.map(p => ({name:p.name, angle:p.result.angle, turned:p.result.turned,
+      windows: p.result.windows.map(w => ({cell:w.cell, ok:w.ok, why:w.why || null,
+        ratio: w.ratio ?? null, ratio_worst: w.ratio_worst ?? null, n: w.n ?? null, leftOut:p.excluded.has(w.cell)}))})),
+  });
+  persist();
+  STATE.photos = []; renderPhotos(); renderResult(); renderSaved();
+  toast("Saved " + locLabel(STATE.readings[0]) + ": " + BAND_TEXT[STATE.readings[0].band]);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Saved readings
+ * ------------------------------------------------------------------ */
+function renderSaved(){
+  const box = $("#saved"); box.innerHTML = "";
+  $("#savedCount").textContent = STATE.readings.length ? "(" + STATE.readings.length + ")" : "";
+  $("#csvBtn").disabled = $("#clearBtn").disabled = !STATE.readings.length;
+  if (!STATE.readings.length){ box.appendChild(el("p", {class:"empty", text:"Nothing saved yet."})); return; }
+  for (const r of STATE.readings){
+    box.appendChild(el("div", {class:"reading"}, [
+      el("span", {class:"chip", text:BAND_TEXT[r.band], style:"background:" + BAND_COLORS[r.band]}),
+      el("div", {class:"what"}, [
+        el("div", {class:"where", text:locLabel(r)}),
+        el("div", {class:"meta", text:[r.site, "worst-area " + pct(r.worst), "typical " + pct(r.typical),
+          r.used + "/" + r.total + " windows", r.photos.length + (r.photos.length === 1 ? " photo" : " photos"),
+          new Date(r.savedAt).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}),
+          r.note].filter(Boolean).join(" · ")}),
+      ]),
+      el("button", {class:"btn sm ghost", title:"Delete reading", text:"🗑", onclick:() => {
+        if (!confirm("Delete the reading for " + locLabel(r) + "?")) return;
+        STATE.readings = STATE.readings.filter(x => x !== r); persist(); renderSaved();
+      }}),
+    ]));
+  }
+}
+
+const csvCell = v => { const s = v == null ? "" : String(v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+function exportCSV(){
+  const head = ["Site","Barn","Room","Row","Side","Note","Cross-section loss band","Worst-area width loss %","Typical width loss %",
+                "Median width/pitch ratio","Windows used","Windows measurable","Windows total","Photos","Baseline ratio","Saved"];
+  const rows = STATE.readings.slice().reverse().map(r => [r.site, r.barn, r.room, r.row, r.side, r.note, BAND_TEXT[r.band],
+    (100 * r.worst).toFixed(1), (100 * r.typical).toFixed(1), r.ratio.toFixed(4), r.used, r.measurable, r.total,
+    r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString()]);
+  const csv = [head, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
+  const sites = [...new Set(STATE.readings.map(r => r.site).filter(Boolean))];
+  const fn = "Tribar readings" + (sites.length === 1 ? " - " + sites[0].replace(/[\\/:*?"<>|]+/g, "-") : "") +
+             " - " + new Date().toISOString().slice(0, 10) + ".csv";
+  shareOrDownload(fn, new Blob(["﻿" + csv], {type:"text/csv"}), "text/csv");
+}
+function downloadBlob(filename, blob){
+  const a=document.createElement("a"), url=URL.createObjectURL(blob);
+  a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url); a.remove();},120);
+}
+// On iPad/iPhone the native share sheet ("Save to Files") is the reliable
+// way to keep a file; on a computer we just download it.
+async function shareOrDownload(filename, blob, mime){
+  try{
+    const file=new File([blob], filename, {type:mime});
+    if (navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:filename});
+      return;
+    }
+  }catch(e){ if(e && e.name==="AbortError") return; /* else fall through */ }
+  downloadBlob(filename, blob);
+  toast("Exported " + filename);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Start-up
+ * ------------------------------------------------------------------ */
+function init(){
+  restore();
+  const fields = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fSide:"side", fNote:"note"};
+  for (const [id, key] of Object.entries(fields)){
+    const input = $("#" + id); input.value = STATE.loc[key] || "";
+    input.addEventListener(input.tagName === "SELECT" ? "change" : "input", () => {
+      STATE.loc[key] = input.value.trim(); persist(); showSite(); renderResult();
+    });
+  }
+  showSite();
+  $("#shootBtn").addEventListener("click", () => { $("#shootInput").value = ""; $("#shootInput").click(); });
+  $("#pickBtn").addEventListener("click", () => { $("#pickInput").value = ""; $("#pickInput").click(); });
+  for (const id of ["#shootInput", "#pickInput"])
+    $(id).addEventListener("change", e => { if (e.target.files.length) addFiles([...e.target.files]); });
+  $("#marksBox").checked = STATE.marks;
+  $("#marksBox").addEventListener("change", e => {
+    STATE.marks = e.target.checked; persist();
+    for (const ph of STATE.photos) if (ph.stage) drawOverlay(ph);
+  });
+  $("#csvBtn").addEventListener("click", exportCSV);
+  $("#clearBtn").addEventListener("click", () => {
+    if (!confirm("Delete all " + STATE.readings.length + " saved readings? Export them first if you need them.")) return;
+    STATE.readings = []; persist(); renderSaved();
+  });
+  renderPhotos(); renderResult(); renderSaved();
+}
+function showSite(){
+  $("#siteTag").style.display = STATE.loc.site ? "inline-flex" : "none";
+  $("#siteTagName").textContent = STATE.loc.site;
+}
+document.addEventListener("DOMContentLoaded", init);
+</script>
+<script>
+  // Register the offline service worker (only when served over http/https; skipped for local file:// use).
+  if ('serviceWorker' in navigator && location.protocol.indexOf('http')===0) {
+    window.addEventListener('load', function(){ navigator.serviceWorker.register('./sw.js').catch(function(){}); });
+  }
+</script>
+</body>
+</html>

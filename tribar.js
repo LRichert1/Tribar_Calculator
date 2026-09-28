@@ -478,8 +478,9 @@ function measure(gray, w, h, opts = {}) {
       else if (med > MAX_RATIO)  why = 'ratio ' + med.toFixed(2) + ' implausible - locked onto gap';
       if (why) Object.assign(rec, { ok: false, why, ratio: med, mod, n });
       else Object.assign(rec, { ok: true, ratio: med, ratio_worst: Math.max(low, 0), mod, n, pitch: r.pitch_med });
-      // every 3rd width measurement, for drawing (as measure3.draw does)
-      rec.marks = r.samples.filter((_, q) => q % 3 === 0).map((sm) => [sm[0], sm[1], sm[2]]);
+      // the widths measured on every 3rd scan row, for drawing (measure3.draw
+      // takes every 3rd sample, which can land on the same bar in every row)
+      rec.marks = r.samples.filter((sm) => (sm[0] - y0 - 4) % 18 === 0).map((sm) => [sm[0], sm[1], sm[2]]);
       windows.push(rec);
     }
   progress(1, 'Done');
