@@ -164,7 +164,8 @@
     </div>
     <p class="tip"><b>Hold the phone flat, straight above the floor.</b> Low-angle shots read corroded bars as nearly new.
       Indoors, no flash; the bars can run up-and-down or across the frame. A dark pit behind the bars reads best,
-      and sun or flash glare on wet bars gives bad readings.</p>
+      and sun or flash glare on wet bars gives bad readings. Where the floor under the bars is brighter than the bars
+      (gravel, debris, glare on water) their edges can't be read, and the app leaves those readings out.</p>
     <div id="photos"></div>
     <div id="photoTools" hidden style="margin-top:12px">
       <p class="tip" style="margin-bottom:6px"><b>Tap the worst spot on the worst bar.</b> The app measures the bar's width over
@@ -348,8 +349,8 @@ function removePhoto(ph){
  *  Photo cards: the straightened photo, its 12 windows, and the worst
  *  bar the inspector taps
  * ------------------------------------------------------------------ */
-const SHORT_WHY = [["bars not", "no bars"], ["low contrast", "unclear"], ["too few", "few edges"],
-                   ["highlight", "glare?"], ["gap", "gap?"]];
+const SHORT_WHY = [["bars not", "no bars"], ["low contrast", "unclear"], ["off the bars", "bright pit"],
+                   ["too few", "few edges"], ["highlight", "glare?"], ["gap", "gap?"]];
 const shortWhy = why => (SHORT_WHY.find(([k]) => why.includes(k)) || [0, "not measured"])[1];
 
 // Draw the photo exactly as it was measured: turned 90° if the bars ran
@@ -424,8 +425,9 @@ function drawOverlay(ph){
   ph.pickLbl.textContent = "Worst spot " + pct(p.loss);
 }
 
-// Every width reading in a photo's usable windows: [y, centre x, width, pitch]
-const barSamples = ph => ph.result.windows.filter(w => w.ok).flatMap(w => w.samples || []);
+// Every width reading that can be tapped: [y, centre x, width, pitch]. Only
+// readings that follow a bar; windows too poor to measure have none.
+const barSamples = ph => ph.result.windows.flatMap(w => w.samples || []);
 
 function tapBar(ph, ev){
   const rect = ph.stage.getBoundingClientRect(), r = ph.result;
@@ -433,7 +435,9 @@ function tapBar(ph, ev){
   const t = Tribar.measureSpot(barSamples(ph), x, y);
   if (!t){
     const w = r.windows.find(w => x >= w.box[0] && x < w.box[1] && y >= w.box[2] && y < w.box[3]);
-    toast(w && !w.ok ? "Not measured here: " + w.why : "No measured bar there. Tap on a bar inside a measured window.");
+    toast(!w ? "Tap on a bar inside one of the windows."
+      : !w.samples ? "Not measured here: " + w.why
+      : "No bar readings there. Where the floor under the bars is bright (gravel, debris, glare) their edges can't be read; tap a bar where it has red width lines.");
     return;
   }
   if (ph.pick && ph.pick.spot.some(m => t.spot.includes(m))) ph.pick = null;   // tapped the picked spot again

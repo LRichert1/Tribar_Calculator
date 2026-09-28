@@ -12,6 +12,11 @@ Checks, per photo:
   forced   with the reference's angle, every window's pass/fail and reason
            match and ratios agree to 1e-6
   auto     tribar.js's own angle search picks the reference's angle
+  app      with only the readings that follow a bar (what the app shows),
+           typical and worst-area loss stay within 1.5 points of the
+           reference's on the clean photos; on the gravel photo, where the
+           reference reads the stones between the bars, every window the app
+           measures is within 5 points of the drawn bars
 Exits non-zero if any check fails.
 """
 import json, os, subprocess, sys, tempfile
@@ -33,10 +38,12 @@ def smooth_noise(rng, h, w, scale):
 
 
 def synth(W, H, pitch, ratio, angle, seed, rust=True, blur=1.2, noise=3.0, jitter=0.02,
-          highlights=0, galv_ratio=None, jpeg=90):
+          highlights=0, galv_ratio=None, gravel=None, jpeg=90):
     """Bright bars of width ratio*pitch over a dark pit, tilted `angle` deg.
     With galv_ratio, bars left of centre are rusty at `ratio` and bars right of
-    centre are galvanized at `galv_ratio`."""
+    centre are galvanized at `galv_ratio`. With gravel=(top, bottom), that band
+    of the photo (fractions of its height) has pale stones on the pit floor,
+    brighter than the bars, as in the C10 photos."""
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
     th = np.deg2rad(angle)
@@ -58,6 +65,15 @@ def synth(W, H, pitch, ratio, angle, seed, rust=True, blur=1.2, noise=3.0, jitte
     light = 1 + 0.35 * (xx / W - 0.5) + 0.15 * (yy / H - 0.5)
     top = rng.uniform(150, 210, nb)[kk] * light * (1 + 0.12 * smooth_noise(rng, H, W, 25))
     pit = 24 + 10 * smooth_noise(rng, H, W, 60)
+    if gravel:
+        stones = np.zeros((H, W), np.float32)
+        for _ in range(int(W * H * (gravel[1] - gravel[0]) / (gravel_n := 60))):
+            cx, cy, s = rng.uniform(0, W), rng.uniform(H * gravel[0], H * gravel[1]), rng.uniform(1.5, 0.12 * pitch)
+            x0, x1, y0, y1 = int(max(0, cx - 3 * s)), int(min(W, cx + 3 * s + 1)), int(max(0, cy - 3 * s)), int(min(H, cy + 3 * s + 1))
+            g = np.exp(-((xx[y0:y1, x0:x1] - cx) ** 2 + (yy[y0:y1, x0:x1] - cy) ** 2) / (2 * s * s))
+            stones[y0:y1, x0:x1] = np.maximum(stones[y0:y1, x0:x1], rng.uniform(0.5, 1.0) * g)
+        band = np.clip(np.minimum(yy - H * gravel[0], H * gravel[1] - yy) / 10, 0, 1)
+        pit = pit + band * (60 + 170 * stones)
     if highlights:
         spots = np.zeros((H, W), np.float32)
         for _ in range(highlights):
@@ -85,7 +101,10 @@ CASES = [
     ('soft, low contrast',   1600, 1200, 40, 0.45,  -6.0, {'blur': 3.5, 'noise': 9}),
     ('phone size, 12 MP',    4032, 3024, 110, 0.44,  2.0, {}),
     ('bars across the photo', 1600, 1200, 60, 0.42, 96.0, {}),  # reference can't do this one
+    ('gravel under the bars', 1600, 1200, 50, 0.40,   2.5, {'gravel': (0.12, 0.30)}),  # reference reads the stones
 ]
+# cases where the reference is known to be wrong: the app is checked against the drawn bars instead
+BRIGHT_FLOOR = {'gravel under the bars'}
 
 
 def py_windows(res):
@@ -163,6 +182,25 @@ def main():
                     100 * js_sum[0], 100 * js_sum[1], js['summary']['band'], js_sum[2], ratio, js_sum[3])
             else:
                 line += ' | js: no usable windows'
+            app_sum = summary(js['app']['windows'])
+            if not app_sum:
+                problems.append('app: no usable windows')
+            elif name in BRIGHT_FLOOR:
+                truth = 1 - ratio / BASELINE
+                loss = lambda ws: [1 - w['ratio'] / BASELINE for w in ws if w['ok']]
+                ref_worst, app_worst = max(loss(js['auto']['windows'])), max(loss(js['app']['windows']))
+                line += ' | drawn %.1f%%: worst window reference %.1f%%, app %.1f%% (%d/12)' % (
+                    100 * truth, 100 * ref_worst, 100 * app_worst, app_sum[3])
+                if ref_worst < truth + 0.10:
+                    problems.append('test photo no longer fools the reference (worst window %.1f%%)' % (100 * ref_worst))
+                for w in js['app']['windows']:
+                    if w['ok'] and abs(1 - w['ratio'] / BASELINE - truth) > 0.05:
+                        problems.append('app window %s reads %.1f%%, drawn bars %.1f%%' % (w['cell'], 100 * (1 - w['ratio'] / BASELINE), 100 * truth))
+            elif js_sum:
+                line += ' | app typical %5.1f%% worst %5.1f%% %d/12' % (100 * app_sum[0], 100 * app_sum[1], app_sum[3])
+                for k, label in ((0, 'typical'), (1, 'worst-area')):
+                    if abs(app_sum[k] - js_sum[k]) > 0.015:
+                        problems.append('app %s loss %.1f%%, reference %.1f%%' % (label, 100 * app_sum[k], 100 * js_sum[k]))
             status = 'FAIL' if problems else 'ok  '
             print('%s %-22s %5.1fs  %s' % (status, name, js['ms'] / 1000, line))
             for p in problems: print('       - ' + p)

@@ -18,6 +18,15 @@
  *  - If the bars run across the photo instead of up and down, the image is
  *    turned 90 deg before measuring. The reference only searches +/-30 deg
  *    and would reject such a photo.
+ *  - Only width readings that follow a bar from one scan row to the next are
+ *    used (followBars), before the reference's shadow rejection. Where the
+ *    pit floor is brighter than the bars (gravel, debris, glare on water) the
+ *    reference measures bright bits between the bars as if they were bars;
+ *    in the gravel band of a C10 photo most readings sat on stones. On the
+ *    five C44 photos this keeps 96-98% of readings, leaves the median window
+ *    ratio unchanged (0.4665 vs 0.4666) and moves one window 3 points (it
+ *    drops a glint running down one bar's edge); the rest move under 1.
+ *    measure(..., {reference: true}) turns it off.
  *
  * Loads as a browser/worker script (self.Tribar) or a Node module.
  */
@@ -373,8 +382,115 @@ function rowMeasure(prof, pmin = 12, pmax = 400, minMod = 0.25, minAmp = 12) {
   return { pitch, mod, amp, dets };
 }
 
-// measure3.analyze: measure every `stride`-th 8-row band in one window
-function analyzeWindow(gr, w, x0, x1, y0, y1, band = 4, stride = 6) {
+// Least-squares line through readings [y, x, ...]: x at a given y
+function lineFit(pts) {
+  let ym = 0, a = 0, syy = 0, syx = 0;
+  for (const q of pts) { ym += q[0]; a += q[1]; }
+  ym /= pts.length; a /= pts.length;
+  for (const q of pts) { syy += (q[0] - ym) ** 2; syx += (q[0] - ym) * (q[1] - a); }
+  const b = syy > 0 ? syx / syy : 0;
+  return { at: (y) => a + b * (y - ym) };
+}
+
+// Which readings follow a bar. Not in the reference; see the header. Where
+// the floor of the pit is brighter than the bars (gravel, debris, glare on
+// standing water) the half-max readings land on bright bits between the bars,
+// and cross-rods and glints give readings too. A bar is a long straight
+// stripe, so:
+//  1. its readings line up from one scan row to the next at nearly the same
+//     centre. Chained readings spanning at least half a bar spacing, with a
+//     median width a bar could have, make a track.
+//  2. bars sit whole bar spacings apart. A track half-way between the lines
+//     of longer tracks (extended straight up and down the photo) is on the
+//     floor, e.g. a line of stones down the middle of a gap.
+//  3. a reading off the tracks still counts if a track runs within 15% of a
+//     bar spacing of its centre (a pit in one edge moves the centre sideways)
+//     and it is no brighter than the bar there (not a glint).
+// S: one window's samples [y, x, width, pitch, ratio, contrast, top], scan
+// rows `stride` px apart. Returns a keep flag per sample.
+function followBars(S, stride) {
+  const n = S.length, keep = new Uint8Array(n), onTrack = new Uint8Array(n);
+  const rows = new Map();
+  S.forEach((s, i) => { if (!rows.has(s[0])) rows.set(s[0], []); rows.get(s[0]).push(i); });
+  // how far the bars lean: the typical sideways step from one scan row to the next
+  const steps = [];
+  for (const [y, list] of rows) {
+    const next = rows.get(y + stride);
+    if (next) for (const i of list) {
+      let step = null;
+      for (const j of next) {
+        const d = S[j][1] - S[i][1];
+        if (Math.abs(d) < 0.25 * S[i][3] && (step === null || Math.abs(d) < Math.abs(step))) step = d;
+      }
+      if (step !== null) steps.push(step);
+    }
+  }
+  const lean = steps.length >= 10 ? median(steps) : 0;
+  // 1. chain each reading to its nearest in the next scan row (or the one
+  // after, over a missed row) when each is the other's nearest within tolerance
+  const parent = Array.from(S, (_, i) => i), up = new Uint8Array(n), down = new Uint8Array(n);
+  const root = (i) => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; };
+  for (const y of [...rows.keys()].sort((a, b) => a - b))
+    for (const k of [1, 2]) {
+      const A = rows.get(y), B = rows.get(y + k * stride);
+      if (!B) continue;
+      const shift = lean * k;
+      for (const i of A) {
+        if (down[i]) continue;
+        const tol = Math.max(1.5, 0.05 * S[i][3]) * (k === 1 ? 1 : 1.5);
+        let j = -1, dj = tol, back = -1, db = tol;
+        for (const c of B) { const d = Math.abs(S[c][1] - S[i][1] - shift); if (!up[c] && d <= dj) { dj = d; j = c; } }
+        if (j < 0) continue;
+        for (const c of A) { const d = Math.abs(S[j][1] - S[c][1] - shift); if (!down[c] && d <= db) { db = d; back = c; } }
+        if (back !== i) continue;
+        parent[root(j)] = root(i); down[i] = up[j] = 1;
+      }
+    }
+  const chains = new Map(), tracks = [];
+  S.forEach((_, i) => { const r = root(i); if (!chains.has(r)) chains.set(r, []); chains.get(r).push(i); });
+  for (const list of chains.values()) {
+    if (list.length < 4) continue;
+    let first = Infinity, last = -Infinity;
+    for (const i of list) { first = Math.min(first, S[i][0]); last = Math.max(last, S[i][0]); }
+    const p = median(list.map((i) => S[i][3])), ratio = median(list.map((i) => S[i][4]));
+    if (last - first >= 0.5 * p && ratio >= MIN_RATIO && ratio <= MAX_RATIO)
+      tracks.push({ list, first, last, p, long: last - first >= 1.5 * p, line: lineFit(list.map((i) => S[i])) });
+  }
+  // 2. each track's offset from the line of every longer-than-1.5-spacing
+  // track, extended up to 6 spacings past its ends; a track goes when the
+  // tracks it sits half-way between outweigh itself and those it agrees with
+  for (const t of tracks) {
+    let agree = 0, against = 0;
+    for (const L of tracks) {
+      if (L === t || !L.long) continue;
+      const off = [];
+      for (const i of t.list) {
+        const y = S[i][0];
+        if (y < L.first - 6 * L.p || y > L.last + 6 * L.p) continue;
+        const d = (L.line.at(y) - S[i][1]) / S[i][3];
+        if (Math.abs(d) <= 1.6) off.push(Math.abs(d - Math.round(d)));
+      }
+      if (!off.length) continue;
+      const f = median(off);
+      if (f < 0.2) agree += L.list.length; else if (f > 0.3) against += L.list.length;
+    }
+    if (against <= agree + t.list.length) for (const i of t.list) onTrack[i] = keep[i] = 1;
+  }
+  // 3. readings off the tracks
+  for (let i = 0; i < n; i++) {
+    if (keep[i]) continue;
+    const [y, x, , p] = S[i], near = [];
+    for (let yy = y - Math.floor(1.2 * p / stride) * stride; yy <= y + 1.2 * p; yy += stride)
+      for (const j of rows.get(yy) || []) if (onTrack[j] && Math.abs(S[j][1] - x) <= 0.3 * p) near.push(S[j]);
+    if (near.length >= 4 && Math.abs(x - lineFit(near).at(y)) <= 0.15 * p &&
+        S[i][6] <= 1.3 * median(near.map((q) => q[6]))) keep[i] = 1;
+  }
+  return keep;
+}
+
+// measure3.analyze: measure every `stride`-th 8-row band in one window.
+// With `onBars`, only the readings that follow a bar are used (followBars).
+function analyzeWindow(gr, w, x0, x1, y0, y1, band = 4, stride = 6, onBars = false) {
   const n = x1 - x0, rows = [];
   for (let y = y0 + band; y < y1 - band; y += stride) {
     const prof = new Float32Array(n);
@@ -389,13 +505,20 @@ function analyzeWindow(gr, w, x0, x1, y0, y1, band = 4, stride = 6) {
   let S = [];
   for (const r of rows)
     for (const [c, bw, con, top] of r.dets) S.push([r.y, x0 + c, bw, r.pitch, bw / r.pitch, con, top]);
+  const nraw = S.length;
+  if (onBars) {
+    const on = followBars(S, stride);
+    S = S.filter((_, i) => on[i]);
+    if (!S.length) return { ok: false, reason: 'no readings follow a bar', nraw, nbar: 0, mod_med: median(rows.map((r) => r.mod)) };
+  }
+  const nbar = S.length;
   // shadow rejection: drop samples whose bar peak is much darker than typical
   const tref = percentileSorted(Float64Array.from(S, (r) => r[6]).sort(), 75, false);
   const keep = S.filter((r) => r[6] > 0.72 * tref && r[5] > 25);
   if (keep.length >= 40) S = keep;
   const ratios = Float64Array.from(S, (r) => r[4]).sort();
   return {
-    ok: true, kept: S.length, nrows: rows.length, nsamp: ratios.length,
+    ok: true, kept: S.length, nraw, nbar, nrows: rows.length, nsamp: ratios.length,
     pitch_med: median(rows.map((r) => r.pitch)),
     mod_med: median(rows.map((r) => r.mod)),
     r_p50: percentileSorted(ratios, 50, false),
@@ -447,7 +570,9 @@ function findBars(gray, w, h) {
 }
 
 // tribar_measure.analyse_image, from an 8-bit grayscale image. `opts.angle`
-// (with `opts.turned`) skips the search, for tests and re-runs.
+// (with `opts.turned`) skips the search, for tests and re-runs;
+// `opts.reference` uses every reading, as the reference does, instead of
+// only those that follow a bar.
 function measure(gray, w, h, opts = {}) {
   const progress = opts.onProgress || (() => {});
   let turned, angle;
@@ -467,23 +592,30 @@ function measure(gray, w, h, opts = {}) {
     for (let j = 0; j < NY; j++) {
       progress(0.3 + 0.7 * (i * NY + j) / (NX * NY), 'Measuring window ' + (i * NY + j + 1) + ' of ' + NX * NY);
       const [x0, x1, y0, y1] = [xs[i], xs[i + 1], ys[j], ys[j + 1]];
-      const r = analyzeWindow(gr, w, x0, x1, y0, y1);
+      const r = analyzeWindow(gr, w, x0, x1, y0, y1, 4, 6, !opts.reference);
       const rec = { cell: i + ',' + j, box: [x0, x1, y0, y1] };
-      if (!r.ok) { rec.ok = false; rec.why = 'bars not resolved'; windows.push(rec); continue; }
-      const n = r.kept, mod = r.mod_med, med = r.r_p50, low = r.r_p25;
+      if (!r.ok && !r.nraw) { rec.ok = false; rec.why = 'bars not resolved'; windows.push(rec); continue; }
+      const n = r.ok ? r.kept : 0, mod = r.mod_med, med = r.r_p50, low = r.r_p25;
+      const few = mod >= MIN_MODULATION && n < MIN_SAMPLES;
       let why = null;
       if (mod < MIN_MODULATION)  why = 'low contrast (mod ' + mod.toFixed(2) + ')';
-      else if (n < MIN_SAMPLES)  why = 'too few samples (' + n + ')';
+      else if (few) {
+        why = 'too few samples (' + n + ')';
+        if (r.nraw >= MIN_SAMPLES && r.nbar < 0.75 * r.nraw)
+          why += ' - only ' + r.nbar + ' of ' + r.nraw + ' readings follow a bar, the rest are off the bars (bright floor, debris or glare?)';
+      }
       else if (med < MIN_RATIO)  why = 'ratio ' + med.toFixed(2) + ' implausible - locked onto highlight/gap';
       else if (med > MAX_RATIO)  why = 'ratio ' + med.toFixed(2) + ' implausible - locked onto gap';
       if (why) Object.assign(rec, { ok: false, why, ratio: med, mod, n });
       else Object.assign(rec, { ok: true, ratio: med, ratio_worst: Math.max(low, 0), mod, n, pitch: r.pitch_med });
+      if (!r.ok) { windows.push(rec); continue; }
       // the widths measured on every 3rd scan row, for drawing (measure3.draw
       // takes every 3rd sample, which can land on the same bar in every row):
       // [y, bar centre x, measured width, local pitch]
       rec.marks = r.samples.filter((sm) => (sm[0] - y0 - 4) % 18 === 0).map((sm) => [sm[0], sm[1], sm[2], sm[3]]);
-      // every width reading, for measuring a tapped spot
-      rec.samples = r.samples.map((sm) => [sm[0], sm[1], sm[2], sm[3]]);
+      // every width reading, for measuring a tapped spot. A window with too few
+      // readings for its own figure still has good ones to tap.
+      if (!why || few) rec.samples = r.samples.map((sm) => [sm[0], sm[1], sm[2], sm[3]]);
       windows.push(rec);
     }
   progress(1, 'Done');
@@ -550,7 +682,7 @@ function summarize(windows, baseline = BASELINE_RATIO) {
 const api = {
   BASELINE_RATIO, grade, grayFromRGBA, measure, summarize, traceBar, measureSpot,
   // internals, for test/parity.py
-  cvRound, percentileSorted, blur1d, detrend, pitchFFT, rowMeasure, halfmax, analyzeWindow,
+  cvRound, percentileSorted, blur1d, detrend, pitchFFT, rowMeasure, halfmax, analyzeWindow, followBars,
   rotate, angleScore, findBars, turn90, ANGLES,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
