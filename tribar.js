@@ -479,8 +479,9 @@ function measure(gray, w, h, opts = {}) {
       if (why) Object.assign(rec, { ok: false, why, ratio: med, mod, n });
       else Object.assign(rec, { ok: true, ratio: med, ratio_worst: Math.max(low, 0), mod, n, pitch: r.pitch_med });
       // the widths measured on every 3rd scan row, for drawing (measure3.draw
-      // takes every 3rd sample, which can land on the same bar in every row)
-      rec.marks = r.samples.filter((sm) => (sm[0] - y0 - 4) % 18 === 0).map((sm) => [sm[0], sm[1], sm[2]]);
+      // takes every 3rd sample, which can land on the same bar in every row):
+      // [y, bar centre x, measured width, local pitch]
+      rec.marks = r.samples.filter((sm) => (sm[0] - y0 - 4) % 18 === 0).map((sm) => [sm[0], sm[1], sm[2], sm[3]]);
       windows.push(rec);
     }
   progress(1, 'Done');

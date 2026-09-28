@@ -159,13 +159,14 @@
       <button class="btn primary" id="shootBtn">📷 Take photo</button>
       <button class="btn" id="pickBtn">🖼 Choose photos</button>
     </div>
-    <p class="tip">Shoot square-on to the floor, indoors, no flash, with the bars running up-and-down or across the frame.
-      A dark pit behind the bars reads best. Sun or flash glare on wet bars gives bad readings.</p>
+    <p class="tip"><b>Hold the phone flat, straight above the floor.</b> Low-angle shots read corroded bars as nearly new.
+      Indoors, no flash; the bars can run up-and-down or across the frame. A dark pit behind the bars reads best,
+      and sun or flash glare on wet bars gives bad readings.</p>
     <div id="photos"></div>
     <div id="photoTools" hidden style="margin-top:12px">
       <p class="tip" style="margin-bottom:6px">Tap a window to leave it out: galvanized replacement bars, glare, or anything that isn’t tribar.
         Tap it again to use it.</p>
-      <label class="marks"><input type="checkbox" id="marksBox" checked> Show measured widths (red)</label>
+      <label class="marks"><input type="checkbox" id="marksBox" checked> Show bar widths: blue = new bar, red = measured</label>
     </div>
   </section>
 
@@ -373,16 +374,23 @@ function drawPhoto(ph){
   drawOverlay(ph);
 }
 
+// Each measured bar gets two lines on its centreline: the width a new bar
+// would have at that spot (baseline ratio x the local bar spacing) in blue,
+// and the width measured in the photo in red on top. Blue showing past the
+// red ends is the width that has been lost.
 function drawOverlay(ph){
-  const r = ph.result, ctx = ph.widths.getContext("2d"), s = ph.scale;
+  const r = ph.result, ctx = ph.widths.getContext("2d"), s = ph.scale, half = Tribar.BASELINE_RATIO / 2;
   ctx.clearRect(0, 0, ph.widths.width, ph.widths.height);
-  ctx.strokeStyle = "rgba(255,45,45,.9)"; ctx.lineWidth = Math.max(1, 2 * s);
+  const lines = (marks, halfWidth, style, width) => {
+    ctx.strokeStyle = style; ctx.lineWidth = width; ctx.beginPath();
+    for (const m of marks){ const hw = halfWidth(m); ctx.moveTo((m[1] - hw) * s, m[0] * s); ctx.lineTo((m[1] + hw) * s, m[0] * s); }
+    ctx.stroke();
+  };
   r.windows.forEach((w, i) => {
     const out = ph.excluded.has(w.cell), box = ph.wins[i], lbl = box.firstChild;
     if (STATE.marks && w.marks && !out){
-      ctx.beginPath();
-      for (const [y, x, bw] of w.marks){ ctx.moveTo((x - bw / 2) * s, y * s); ctx.lineTo((x + bw / 2) * s, y * s); }
-      ctx.stroke();
+      lines(w.marks, m => half * m[3], "rgba(0,200,255,.8)", Math.max(2, 3 * s));
+      lines(w.marks, m => m[2] / 2, "rgba(255,45,45,.95)", Math.max(1, 1.6 * s));
     }
     let color = "#9aa5b1";
     if (!w.ok || out) lbl.textContent = out ? "left out" : shortWhy(w.why);
