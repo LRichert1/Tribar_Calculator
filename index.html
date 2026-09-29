@@ -184,7 +184,7 @@
       <button class="btn primary" id="shootBtn">📷 Take photo</button>
       <button class="btn" id="pickBtn">🖼 Choose photos</button>
     </div>
-    <p class="tip"><b>Keep the phone level across the bars.</b> Tipping it forward along the bars, to reach under a feeder,
+    <p class="tip"><b>Keep the camera level across the bars.</b> Tipping it forward along the bars, to reach under a feeder,
       is fine up to about 30°; tilting it across the bars makes corroded bars read nearly new. Take photo shows a level.
       Indoors, no flash; the bars can run up-and-down or across the frame. A dark pit behind the bars reads best,
       and sun or flash glare on wet bars gives bad readings. Where the floor under the bars is brighter than the bars
@@ -226,7 +226,7 @@
   <div class="camBar">
     <button class="btn camBtn" id="camClose">✕ Close</button>
     <button class="shutter" id="camShutter" aria-label="Take photo" disabled></button>
-    <button class="btn camBtn" id="camNative">Phone camera</button>
+    <button class="btn camBtn" id="camNative">Camera app</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -503,7 +503,7 @@ function photoLine(ph){
   if (sum) bits.push("typical " + pct(sum.typical));
   const t = tiltOf(ph);
   if (t) bits.push("tilted " + Math.round(t.across) + "° across the bars, " + Math.round(t.along) + "° along them (" +
-                   (t.source === "sensor" ? "phone's tilt sensor" : "estimated from the photo") + ")");
+                   (t.source === "sensor" ? "tilt sensor" : "estimated from the photo") + ")");
   if (ph.fullSize) bits.push("measured at " + (ph.w * ph.h / 1e6).toFixed(1) + " of " + (ph.fullSize[0] * ph.fullSize[1] / 1e6).toFixed(1) + " MP");
   bits.push(ph.secs.toFixed(1) + " s");
   ph.lineEl.textContent = bits.join(" · ");
@@ -685,7 +685,7 @@ async function shareOrDownload(filename, blob, mime){
 }
 
 /* ------------------------------------------------------------------ *
- *  Tilt. Tipping the phone forward along the bars (the camera looking
+ *  Tilt. Tipping the camera forward along the bars (looking
  *  down their length) is fine: the C44 baseline photos were tipped 15-26°
  *  that way and read the same near and far. Tilting it across the bars is
  *  what spoils readings: of the test photos, every one within 4° of level
@@ -694,7 +694,7 @@ async function shareOrDownload(filename, blob, mime){
  * ------------------------------------------------------------------ */
 const TILT = {acrossOk:5, acrossBad:10, alongOk:30, alongBad:40};
 
-// The phone's tilt sensor at the moment of the photo if the in-app camera
+// The device's tilt sensor at the moment of the photo if the in-app camera
 // took it, else the estimate from the bar spacing in the photo.
 function tiltOf(ph){
   if (ph.tilt) return ph.tilt;
@@ -715,18 +715,18 @@ function tiltWarning(t){
 
 /* ------------------------------------------------------------------ *
  *  In-app camera with a level, so the inspector can see which way to
- *  tip the phone while framing the photo. The bars' direction comes from
+ *  tip the iPad or phone while framing the photo. The bars' direction comes from
  *  the preview (the direction the brightness changes most, across a
- *  thumbnail); the tilt from the phone's orientation sensor.
+ *  thumbnail); the tilt from the device's orientation sensor.
  * ------------------------------------------------------------------ */
 const CAM = {stream:null, look:null, bars:null, sensor:false, raf:0, timer:0, msg:""};
 const barCanvas = document.createElement("canvas");
 
-function phoneCamera(){ $("#shootInput").value = ""; $("#shootInput").click(); }
+function cameraApp(){ $("#shootInput").value = ""; $("#shootInput").click(); }
 
 async function openCamera(){
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return phoneCamera();
-  // iPhone asks permission for the tilt sensor, and only from a tap
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return cameraApp();
+  // iPad and iPhone ask permission for the tilt sensor, and only from a tap
   if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function")
     DeviceOrientationEvent.requestPermission().catch(() => {});
   Object.assign(CAM, {look:null, bars:null, sensor:false, msg:""});
@@ -742,7 +742,7 @@ async function openCamera(){
     CAM.timer = setInterval(() => updateBars(v), 300);
     CAM.raf = requestAnimationFrame(levelFrame);
   }catch(e){
-    setCamMsg("Couldn’t start the camera", (e && e.message ? e.message + ". " : "") + "Tap Phone camera to use the phone’s own camera app.", "bad");
+    setCamMsg("Couldn’t start the camera", (e && e.message ? e.message + ". " : "") + "Tap Camera app to use the built-in camera app.", "bad");
   }
 }
 function stopStream(){ if (CAM.stream){ for (const t of CAM.stream.getTracks()) t.stop(); CAM.stream = null; } }
@@ -755,22 +755,39 @@ function closeCamera(){
 }
 
 // Where the camera points, as a tilt (degrees) toward a direction on the
-// screen (x right, y down). Gravity in the phone's frame is
+// screen (x right, y down). Gravity in the device's own frame (x right, y
+// toward the top edge, held upright in portrait) is
 // (cos b sin g, -sin b, -cos b cos g); the camera looks along -z, so it tips
-// toward (-cos b sin g, sin b) in the phone's frame (y = the top edge). On
-// a spirit level the bubble sits on the high side; here it sits on the side
-// the camera looks toward, which is the same side.
+// toward (-cos b sin g, sin b) in that frame, which is then turned to match
+// the screen. On a spirit level the bubble sits on the high side; here it
+// sits on the side the camera looks toward, which is the same side.
 function onOrientation(e){
   if (e.beta == null || e.gamma == null) return;
   const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
   const tilt = Math.acos(Math.min(1, Math.cos(b) * Math.cos(g))) * 180 / Math.PI;
   const dx = -Math.cos(b) * Math.sin(g), dy = Math.sin(b), n = Math.hypot(dx, dy) || 1;
-  const x = tilt * dx / n, y = -tilt * dy / n, k = 0.25;       // smooth the hand shake
+  const [sx, sy] = toScreen(dx / n, dy / n), x = tilt * sx, y = tilt * sy, k = 0.25;   // k smooths the hand shake
   CAM.look = CAM.look ? {x:CAM.look.x + k * (x - CAM.look.x), y:CAM.look.y + k * (y - CAM.look.y)} : {x, y};
   CAM.sensor = true;
 }
-const screenAngle = () => (screen.orientation && typeof screen.orientation.angle === "number") ? screen.orientation.angle
-                          : (typeof window.orientation === "number" ? window.orientation : 0);
+// How far the screen is turned from the device's upright portrait: 0, 90
+// (turned counterclockwise, so the top edge is on the left), 180 or 270.
+// Safari's window.orientation first: it is what iPads and iPhones report.
+function screenAngle(){
+  if (typeof window.orientation === "number") return (window.orientation + 360) % 360;
+  if (screen.orientation && typeof screen.orientation.angle === "number") return screen.orientation.angle % 360;
+  return 0;
+}
+// A direction in the device's frame (x right, y toward the top edge) on the
+// screen (x right, y down)
+function toScreen(dx, dy){
+  switch (screenAngle()){
+    case 90:  return [-dy, -dx];      // top edge on the left, right edge at the top
+    case 180: return [-dx, dy];
+    case 270: return [dy, dx];        // top edge on the right, right edge at the bottom
+    default:  return [dx, -dy];
+  }
+}
 
 // Direction across the bars on screen, from a thumbnail of the preview:
 // the dominant brightness gradient (structure tensor), smoothed. Left as it
@@ -813,14 +830,13 @@ function setCamMsg(main, small, state){
   m.appendChild(el("b", {text:main})); if (small) m.appendChild(el("small", {text:small}));
 }
 function levelMessage(p){
-  if (!CAM.sensor) return ["Hold the phone over the bars", "No tilt sensor reading. The app estimates the tilt from the photo afterwards.", ""];
-  if (screenAngle() !== 0) return ["Hold the phone upright", "The level works with the phone in portrait.", "warn"];
+  if (!CAM.sensor) return ["Hold it over the bars", "No tilt sensor reading. The app estimates the tilt from the photo afterwards.", ""];
   const hint = CAM.bars ? "" : "Point the camera at the bars. ", A = Math.abs(p.across), L = Math.abs(p.along);
   if (A > TILT.acrossOk){
     const sx = p.across * p.ax, sy = p.across * p.ay;       // the high side, where the bubble is
     const side = Math.abs(sx) >= Math.abs(sy) ? (sx > 0 ? "right" : "left") : (sy > 0 ? "bottom" : "top");
     return ["Lower the " + side + " edge", hint + Math.round(A) + "° across the bars; keep it under " + TILT.acrossOk +
-            "°. Tip along the bars instead, or hold the phone right over the bar.", tiltState(p)];
+            "°. Tip along the bars instead, or hold it right over the bar.", tiltState(p)];
   }
   if (L > TILT.alongOk) return ["Hold it a little flatter", hint + Math.round(L) + "° along the bars; keep it under " + TILT.alongOk + "°.", tiltState(p)];
   return ["Level across the bars ✓", hint + "Tipped " + Math.round(L) + "° along them; fine up to " + TILT.alongOk + "°.", "ok"];
@@ -837,7 +853,7 @@ function levelFrame(){
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, r.width, r.height);
   const p = tiltParts(), [main, small, state] = levelMessage(p);
   setCamMsg(main, small, state);
-  if (!CAM.sensor || screenAngle() !== 0) return;
+  if (!CAM.sensor) return;
   const SA = 9, SL = 3;                                     // screen px per degree across / along the bars
   const color = {ok:"#4caf50", warn:"#ffc107", bad:"#ff5252"}[state] || "#fff";
   const zone = (a, l) => { ctx.beginPath(); ctx.moveTo(-a, -l); ctx.lineTo(-a, l); ctx.arc(0, l, a, Math.PI, 0, true);
@@ -860,12 +876,12 @@ async function takeCameraPhoto(){
   $("#camShutter").disabled = true;
   const cv = document.createElement("canvas"); cv.width = v.videoWidth; cv.height = v.videoHeight;
   cv.getContext("2d").drawImage(v, 0, 0);
-  const p = CAM.sensor && screenAngle() === 0 ? tiltParts() : null;
+  const p = CAM.sensor ? tiltParts() : null;
   const tilt = p ? {across:Math.abs(p.across), along:Math.abs(p.along), source:"sensor"} : null;
   const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.92));
   cv.width = cv.height = 0;
   closeCamera();
-  if (!blob) return toast("Couldn’t take the photo. Try again, or use Phone camera.");
+  if (!blob) return toast("Couldn’t take the photo. Try again, or use Camera app.");
   const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, ".");
   addFiles([new File([blob], "Photo " + stamp + ".jpg", {type:"image/jpeg"})], {tilt});
 }
@@ -886,7 +902,7 @@ function init(){
   $("#shootBtn").addEventListener("click", openCamera);
   $("#camClose").addEventListener("click", closeCamera);
   $("#camShutter").addEventListener("click", takeCameraPhoto);
-  $("#camNative").addEventListener("click", () => { closeCamera(); phoneCamera(); });
+  $("#camNative").addEventListener("click", () => { closeCamera(); cameraApp(); });
   document.addEventListener("visibilitychange", () => { if (document.hidden) closeCamera(); });
   $("#pickBtn").addEventListener("click", () => { $("#pickInput").value = ""; $("#pickInput").click(); });
   for (const id of ["#shootInput", "#pickInput"])
