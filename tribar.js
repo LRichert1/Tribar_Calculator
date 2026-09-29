@@ -651,7 +651,7 @@ function measure(gray, w, h, opts = {}) {
       }
       else if (med < MIN_RATIO)  why = 'ratio ' + med.toFixed(2) + ' implausible - locked onto highlight/gap';
       else if (med > MAX_RATIO)  why = 'ratio ' + med.toFixed(2) + ' implausible - locked onto gap';
-      if (why) Object.assign(rec, { ok: false, why, ratio: med, mod, n });
+      if (why) Object.assign(rec, { ok: false, why, ratio: med, mod, n, pitch: r.pitch_med });
       else Object.assign(rec, { ok: true, ratio: med, ratio_worst: Math.max(low, 0), mod, n, pitch: r.pitch_med });
       if (!r.ok) { windows.push(rec); continue; }
       // the widths measured on every 3rd scan row, for drawing (measure3.draw
@@ -664,7 +664,48 @@ function measure(gray, w, h, opts = {}) {
       windows.push(rec);
     }
   progress(1, 'Done');
-  return { width: w, height: h, turned, angle, windows };
+  return { width: w, height: h, turned, angle, windows, tilt: estimateTilt(windows, w, h) };
+}
+
+// How far the camera was tipped, from how the bar spacing changes across the
+// straightened photo. Not in the reference. Pointed straight down, the bars
+// are the same distance apart everywhere in the photo. Tipped along the bars
+// (looking down their length) the spacing grows steadily toward the near end:
+// spacing ~ 1 - v tan(along), v = image height. Tipped across the bars, one
+// side is nearer and also seen more face-on: spacing ~ (1 - u tan(across))^2,
+// u = image position across. u and v are in image-plane units (tan of the
+// angle off the camera's axis), taking the frame's diagonal to span +/-39.8
+// deg, a phone's main camera (26 mm equivalent); a zoomed photo reads as more
+// tilted than it was. Fitted to the windows' bar spacing by a grid search.
+// Returns {across, along} in degrees (signed: positive = the camera pointed
+// toward the right / bottom of the straightened photo), or null.
+function estimateTilt(windows, w, h) {
+  const k = 2 * 0.832 / Math.hypot(w, h), pts = [];
+  for (const r of windows) {
+    if (!(r.pitch > 0)) continue;
+    const [x0, x1, y0, y1] = r.box;
+    pts.push({ u: ((x0 + x1) / 2 - w / 2) * k, v: ((y0 + y1) / 2 - h / 2) * k, lp: Math.log(r.pitch) });
+  }
+  const cols = new Set(pts.map((q) => q.u)).size, rows = new Set(pts.map((q) => q.v)).size;
+  if (pts.length < 6 || cols < 3 || rows < 2) return null;
+  let best = null;
+  for (let a = -45; a <= 45; a += 0.5) {
+    const ta = Math.tan(a * Math.PI / 180);
+    for (let b = -45; b <= 45; b += 0.5) {
+      const tb = Math.tan(b * Math.PI / 180), m = [];
+      let ok = true;
+      for (const q of pts) {
+        const fa = 1 - q.u * ta, fb = 1 - q.v * tb;
+        if (fa <= 0 || fb <= 0) { ok = false; break; }
+        m.push(q.lp - 2 * Math.log(fa) - Math.log(fb));
+      }
+      if (!ok) continue;
+      const mean = m.reduce((x, y) => x + y, 0) / m.length;
+      const err = m.reduce((x, y) => x + (y - mean) ** 2, 0);
+      if (!best || err < best.err) best = { err, across: a, along: b };
+    }
+  }
+  return best && { across: best.across, along: best.along };
 }
 
 // The bar under the point (x, y): follow it up and down the straightened
@@ -727,7 +768,7 @@ function summarize(windows, baseline = BASELINE_RATIO) {
 const api = {
   BASELINE_RATIO, grade, grayFromRGBA, measure, summarize, traceBar, measureSpot,
   // internals, for test/parity.py
-  cvRound, percentileSorted, blur1d, detrend, pitchFFT, rowMeasure, halfmax, analyzeWindow, followBars,
+  cvRound, percentileSorted, blur1d, detrend, pitchFFT, rowMeasure, halfmax, analyzeWindow, followBars, estimateTilt,
   rotate, angleScore, findBars, turn90, ANGLES,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -124,10 +124,31 @@
 
   .foot{color:var(--muted);font-size:12.5px;margin:6px 2px 0}
 
+  /* ---------- Camera with a level ---------- */
+  .cam{position:fixed;inset:0;z-index:60;background:#000;color:#fff;display:flex;flex-direction:column}
+  .cam[hidden]{display:none}
+  .camView{position:relative;flex:1;overflow:hidden}
+  .camView video,.camView canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+  .camView video{object-fit:cover}
+  .camView canvas{pointer-events:none}
+  .camMsg{position:absolute;left:12px;right:12px;top:calc(12px + env(safe-area-inset-top, 0px));padding:10px 14px;border-radius:10px;
+          background:rgba(0,0,0,.62);font-size:18px;font-weight:800;line-height:1.3;text-align:center}
+  .camMsg small{display:block;font-size:13.5px;font-weight:600;color:#e8eaed;margin-top:4px}
+  .camMsg.ok b{color:#9be29f} .camMsg.warn b{color:#ffd166} .camMsg.bad b{color:#ff8a80}
+  .camBar{display:flex;align-items:center;justify-content:space-between;gap:12px;
+          padding:14px 20px calc(18px + env(safe-area-inset-bottom, 0px));background:#000}
+  .camBtn{min-width:84px;color:#fff;background:#222;border-color:#555}
+  .camBtn:hover{background:#333}
+  .shutter{width:74px;height:74px;border-radius:50%;border:5px solid #fff;background:#fff;box-shadow:inset 0 0 0 4px #000;cursor:pointer;flex:none}
+  .shutter:active{transform:scale(.94)}
+  .shutter:disabled{opacity:.4}
+  .ph-line.warnline{color:#8a5a00;background:#fff4d6}
+  .ph-line.badline{color:var(--danger);background:var(--danger-bg)}
+
   .toast{
     position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
     background:var(--brand-700);color:#fff;padding:11px 18px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.25);
-    opacity:0;pointer-events:none;transition:.25s;font-size:14px;z-index:50;max-width:90vw;
+    opacity:0;pointer-events:none;transition:.25s;font-size:14px;z-index:70;max-width:90vw;
   }
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style>
@@ -163,7 +184,8 @@
       <button class="btn primary" id="shootBtn">📷 Take photo</button>
       <button class="btn" id="pickBtn">🖼 Choose photos</button>
     </div>
-    <p class="tip"><b>Hold the phone flat, straight above the floor.</b> Low-angle shots read corroded bars as nearly new.
+    <p class="tip"><b>Keep the phone level across the bars.</b> Tipping it forward along the bars, to reach under a feeder,
+      is fine up to about 30°; tilting it across the bars makes corroded bars read nearly new. Take photo shows a level.
       Indoors, no flash; the bars can run up-and-down or across the frame. A dark pit behind the bars reads best,
       and sun or flash glare on wet bars gives bad readings. Where the floor under the bars is brighter than the bars
       (gravel, debris, glare on water) their edges can't be read, and the app leaves those readings out.</p>
@@ -195,6 +217,18 @@
     the typical loss around it for comparison.</p>
 </main>
 
+<div class="cam" id="cam" hidden>
+  <div class="camView">
+    <video id="camVideo" playsinline muted autoplay></video>
+    <canvas id="camLevel"></canvas>
+    <div class="camMsg" id="camMsg"><b>Starting the camera…</b></div>
+  </div>
+  <div class="camBar">
+    <button class="btn camBtn" id="camClose">✕ Close</button>
+    <button class="shutter" id="camShutter" aria-label="Take photo" disabled></button>
+    <button class="btn camBtn" id="camNative">Phone camera</button>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 <input type="file" id="shootInput" accept="image/*" capture="environment" hidden>
 <input type="file" id="pickInput" accept="image/*" multiple hidden>
@@ -323,9 +357,9 @@ async function decodePhoto(file){
 }
 
 let queue = Promise.resolve();
-function addFiles(files){
+function addFiles(files, extra = {}){
   for (const file of files){
-    const ph = {id:uid(), name:file.name || "Photo", status:"queued", msg:"Waiting…", progress:0, pick:null, file};
+    const ph = {id:uid(), name:file.name || "Photo", status:"queued", msg:"Waiting…", progress:0, pick:null, file, tilt:extra.tilt || null};
     STATE.photos.push(ph);
     queue = queue.then(() => processPhoto(ph));
   }
@@ -467,9 +501,15 @@ function photoLine(ph){
                 ph.pick ? "worst spot " + pct(ph.pick.loss) + " (" + ph.pick.n + " readings; that bar overall " + pct(ph.pick.bar.loss) + ")"
                         : "tap the worst spot on the worst bar"];
   if (sum) bits.push("typical " + pct(sum.typical));
+  const t = tiltOf(ph);
+  if (t) bits.push("tilted " + Math.round(t.across) + "° across the bars, " + Math.round(t.along) + "° along them (" +
+                   (t.source === "sensor" ? "phone's tilt sensor" : "estimated from the photo") + ")");
   if (ph.fullSize) bits.push("measured at " + (ph.w * ph.h / 1e6).toFixed(1) + " of " + (ph.fullSize[0] * ph.fullSize[1] / 1e6).toFixed(1) + " MP");
   bits.push(ph.secs.toFixed(1) + " s");
   ph.lineEl.textContent = bits.join(" · ");
+  const warn = tiltWarning(t);
+  ph.tiltEl.hidden = !warn;
+  if (warn){ ph.tiltEl.className = "ph-line " + (warn.bad ? "badline" : "warnline"); ph.tiltEl.textContent = warn.text; }
 }
 
 function showProgress(ph){
@@ -487,6 +527,7 @@ function renderPhotos(){
       if (!ph.stage) drawPhoto(ph);
       card.appendChild(ph.stage);
       card.appendChild(ph.lineEl = el("div", {class:"ph-line"}));
+      card.appendChild(ph.tiltEl = el("div", {class:"ph-line", hidden:""}));
       photoLine(ph);
     } else if (ph.status === "error"){
       card.appendChild(el("div", {class:"ph-line err", text:ph.msg}));
@@ -536,6 +577,10 @@ function renderResult(){
     el("div", {class:"bandCap"}, [el("b", {text:"Cross-section loss"}), el("br"), "at the worst spot you tapped"]),
   ]));
   if (w.loss < WIDER_THAN_NEW) card.appendChild(el("p", {class:"warn", text:widerWarning(w.loss)}));
+  const wt = tiltOf(worst);
+  if (wt && wt.across > TILT.acrossBad) card.appendChild(el("p", {class:"warn", text:"The photo with the worst spot was tilted " +
+    Math.round(wt.across) + "° across the bars. Photos tilted 20–35° that way read one to two bands low in testing. " +
+    "Retake it level side to side; tipping forward along the bars is fine."}));
   card.appendChild(el("div", {class:"stats"}, [
     stat(pct(w.loss), "Worst spot width loss" + (done.length > 1 ? " (" + worst.name + ")" : "")),
     stat(pct(w.bar.loss), "That bar overall (median along it)"),
@@ -563,7 +608,7 @@ function saveReading(){
     id:uid(), savedAt:new Date().toISOString(), ...STATE.loc,
     band:Tribar.grade(w.loss), worstSpot:w.loss, worstSpotRatio:w.ratio, worstSpotN:w.n, worstBar:w.bar.loss, worstSpotPhoto:worst.name,
     typical:typical.typical, used:typical.n, total, baseline:Tribar.BASELINE_RATIO,
-    photos: done.map(p => ({name:p.name, angle:p.result.angle, turned:p.result.turned,
+    photos: done.map(p => ({name:p.name, angle:p.result.angle, turned:p.result.turned, tilt:tiltOf(p),
       // where the tapped spot is, in the straightened photo's pixels
       pick: p.pick ? {loss:p.pick.loss, n:p.pick.n, bar:p.pick.bar.loss, x:Math.round(p.pick.spot[p.pick.spot.length >> 1][1]),
                       y0:Math.round(p.pick.spot[0][0]), y1:Math.round(p.pick.spot[p.pick.spot.length - 1][0])} : null,
@@ -608,10 +653,12 @@ const pct1 = v => v == null ? "" : (100 * v).toFixed(1);
 function exportCSV(){
   const head = ["Site","Barn","Room","Row","Side","Note","Cross-section loss band","Worst spot width loss %",
                 "Readings at worst spot","Worst bar overall width loss %","Worst spot photo","Typical width loss %",
-                "Windows measured","Windows total","Photos","Baseline ratio","Saved"];
+                "Windows measured","Windows total","Photos","Baseline ratio","Saved","Worst spot photo tilt across bars (deg)"];
+  const worstTilt = r => { const p = r.photos.find(q => q.pick && q.name === r.worstSpotPhoto) || r.photos.find(q => q.pick);
+                           return p && p.tilt ? Math.round(p.tilt.across) : ""; };
   const rows = STATE.readings.slice().reverse().map(r => [r.site, r.barn, r.room, r.row, r.side, r.note, BAND_TEXT[r.band],
     pct1(r.worstSpot), r.worstSpotN, pct1(r.worstBar), r.worstSpotPhoto, pct1(r.typical), r.used, r.total,
-    r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString()]);
+    r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString(), worstTilt(r)]);
   const csv = [head, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
   const sites = [...new Set(STATE.readings.map(r => r.site).filter(Boolean))];
   const fn = "Tribar readings" + (sites.length === 1 ? " - " + sites[0].replace(/[\\/:*?"<>|]+/g, "-") : "") +
@@ -638,6 +685,192 @@ async function shareOrDownload(filename, blob, mime){
 }
 
 /* ------------------------------------------------------------------ *
+ *  Tilt. Tipping the phone forward along the bars (the camera looking
+ *  down their length) is fine: the C44 baseline photos were tipped 15-26°
+ *  that way and read the same near and far. Tilting it across the bars is
+ *  what spoils readings: of the test photos, every one within 4° of level
+ *  across the bars read in line with the others, and those tilted 20-35°
+ *  across read one to two bands low. Between 5° and 20° is untested.
+ * ------------------------------------------------------------------ */
+const TILT = {acrossOk:5, acrossBad:10, alongOk:30, alongBad:40};
+
+// The phone's tilt sensor at the moment of the photo if the in-app camera
+// took it, else the estimate from the bar spacing in the photo.
+function tiltOf(ph){
+  if (ph.tilt) return ph.tilt;
+  const t = ph.result && ph.result.tilt;
+  return t ? {across:Math.abs(t.across), along:Math.abs(t.along), source:"photo"} : null;
+}
+function tiltWarning(t){
+  if (!t) return null;
+  if (t.across > TILT.acrossBad) return {bad:true, text:"Tilted " + Math.round(t.across) + "° across the bars. In testing, photos " +
+    "tilted 20–35° that way read one to two bands low, and 5–20° is untested. Retake it level side to side; tipping forward " +
+    "along the bars is fine."};
+  if (t.across > TILT.acrossOk) return {bad:false, text:"Tilted " + Math.round(t.across) + "° across the bars. Keep it under " +
+    TILT.acrossOk + "° if you can: tilting across the bars makes them read wider."};
+  if (t.along > TILT.alongBad) return {bad:false, text:"Tipped " + Math.round(t.along) + "° along the bars, more than the " +
+    "15–26° the baseline photos were taken at. Hold it a little flatter if you can."};
+  return null;
+}
+
+/* ------------------------------------------------------------------ *
+ *  In-app camera with a level, so the inspector can see which way to
+ *  tip the phone while framing the photo. The bars' direction comes from
+ *  the preview (the direction the brightness changes most, across a
+ *  thumbnail); the tilt from the phone's orientation sensor.
+ * ------------------------------------------------------------------ */
+const CAM = {stream:null, look:null, bars:null, sensor:false, raf:0, timer:0, msg:""};
+const barCanvas = document.createElement("canvas");
+
+function phoneCamera(){ $("#shootInput").value = ""; $("#shootInput").click(); }
+
+async function openCamera(){
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return phoneCamera();
+  // iPhone asks permission for the tilt sensor, and only from a tap
+  if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function")
+    DeviceOrientationEvent.requestPermission().catch(() => {});
+  Object.assign(CAM, {look:null, bars:null, sensor:false, msg:""});
+  $("#cam").hidden = false; $("#camShutter").disabled = true;
+  setCamMsg("Starting the camera…", "", "");
+  window.addEventListener("deviceorientation", onOrientation);
+  try{
+    CAM.stream = await navigator.mediaDevices.getUserMedia({audio:false,
+      video:{facingMode:{ideal:"environment"}, width:{ideal:4096}, height:{ideal:3072}}});
+    if ($("#cam").hidden){ stopStream(); return; }      // closed while starting
+    const v = $("#camVideo"); v.srcObject = CAM.stream; await v.play();
+    $("#camShutter").disabled = false;
+    CAM.timer = setInterval(() => updateBars(v), 300);
+    CAM.raf = requestAnimationFrame(levelFrame);
+  }catch(e){
+    setCamMsg("Couldn’t start the camera", (e && e.message ? e.message + ". " : "") + "Tap Phone camera to use the phone’s own camera app.", "bad");
+  }
+}
+function stopStream(){ if (CAM.stream){ for (const t of CAM.stream.getTracks()) t.stop(); CAM.stream = null; } }
+function closeCamera(){
+  if ($("#cam").hidden) return;
+  $("#cam").hidden = true;
+  window.removeEventListener("deviceorientation", onOrientation);
+  cancelAnimationFrame(CAM.raf); clearInterval(CAM.timer);
+  stopStream(); $("#camVideo").srcObject = null;
+}
+
+// Where the camera points, as a tilt (degrees) toward a direction on the
+// screen (x right, y down). Gravity in the phone's frame is
+// (cos b sin g, -sin b, -cos b cos g); the camera looks along -z, so it tips
+// toward (-cos b sin g, sin b) in the phone's frame (y = the top edge). On
+// a spirit level the bubble sits on the high side; here it sits on the side
+// the camera looks toward, which is the same side.
+function onOrientation(e){
+  if (e.beta == null || e.gamma == null) return;
+  const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+  const tilt = Math.acos(Math.min(1, Math.cos(b) * Math.cos(g))) * 180 / Math.PI;
+  const dx = -Math.cos(b) * Math.sin(g), dy = Math.sin(b), n = Math.hypot(dx, dy) || 1;
+  const x = tilt * dx / n, y = -tilt * dy / n, k = 0.25;       // smooth the hand shake
+  CAM.look = CAM.look ? {x:CAM.look.x + k * (x - CAM.look.x), y:CAM.look.y + k * (y - CAM.look.y)} : {x, y};
+  CAM.sensor = true;
+}
+const screenAngle = () => (screen.orientation && typeof screen.orientation.angle === "number") ? screen.orientation.angle
+                          : (typeof window.orientation === "number" ? window.orientation : 0);
+
+// Direction across the bars on screen, from a thumbnail of the preview:
+// the dominant brightness gradient (structure tensor), smoothed. Left as it
+// was when the thumbnail shows no clear stripes.
+function updateBars(video){
+  if (!video.videoWidth) return;
+  const W = 160, H = Math.max(3, Math.round(W * video.videoHeight / video.videoWidth));
+  barCanvas.width = W; barCanvas.height = H;
+  const ctx = barCanvas.getContext("2d", {willReadFrequently:true});
+  ctx.drawImage(video, 0, 0, W, H);
+  const d = ctx.getImageData(0, 0, W, H).data, lum = new Float32Array(W * H);
+  for (let i = 0, j = 0; i < lum.length; i++, j += 4) lum[i] = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
+  let xx = 0, yy = 0, xy = 0;
+  for (let y = 1; y < H - 1; y++)
+    for (let x = 1, i = y * W + 1; x < W - 1; x++, i++){
+      const gx = lum[i + 1] - lum[i - 1], gy = lum[i + W] - lum[i - W];
+      xx += gx * gx; yy += gy * gy; xy += gx * gy;
+    }
+  if (Math.hypot(xx - yy, 2 * xy) < 0.3 * (xx + yy)) return;    // no clear stripes
+  const c = (xx - yy), s2 = 2 * xy, m = Math.hypot(c, s2) || 1;
+  CAM.bars = CAM.bars ? {c:CAM.bars.c + 0.3 * (c / m - CAM.bars.c), s:CAM.bars.s + 0.3 * (s2 / m - CAM.bars.s)} : {c:c / m, s:s2 / m};
+}
+const barAngle = () => CAM.bars ? 0.5 * Math.atan2(CAM.bars.s, CAM.bars.c) : 0;   // 0 = bars running up and down
+
+// The camera's tilt split into across and along the bars (degrees, signed)
+function tiltParts(){
+  if (!CAM.look) return null;
+  const t = barAngle(), ax = Math.cos(t), ay = Math.sin(t);
+  return {across:CAM.look.x * ax + CAM.look.y * ay, along:-CAM.look.x * ay + CAM.look.y * ax, ax, ay};
+}
+function tiltState(p){
+  const A = Math.abs(p.across), L = Math.abs(p.along);
+  return A > TILT.acrossBad || L > TILT.alongBad ? "bad" : A > TILT.acrossOk || L > TILT.alongOk ? "warn" : "ok";
+}
+function setCamMsg(main, small, state){
+  const key = main + "|" + small + "|" + state;
+  if (key === CAM.msg) return;
+  CAM.msg = key;
+  const m = $("#camMsg"); m.className = "camMsg " + state; m.innerHTML = "";
+  m.appendChild(el("b", {text:main})); if (small) m.appendChild(el("small", {text:small}));
+}
+function levelMessage(p){
+  if (!CAM.sensor) return ["Hold the phone over the bars", "No tilt sensor reading. The app estimates the tilt from the photo afterwards.", ""];
+  if (screenAngle() !== 0) return ["Hold the phone upright", "The level works with the phone in portrait.", "warn"];
+  const hint = CAM.bars ? "" : "Point the camera at the bars. ", A = Math.abs(p.across), L = Math.abs(p.along);
+  if (A > TILT.acrossOk){
+    const sx = p.across * p.ax, sy = p.across * p.ay;       // the high side, where the bubble is
+    const side = Math.abs(sx) >= Math.abs(sy) ? (sx > 0 ? "right" : "left") : (sy > 0 ? "bottom" : "top");
+    return ["Lower the " + side + " edge", hint + Math.round(A) + "° across the bars; keep it under " + TILT.acrossOk +
+            "°. Tip along the bars instead, or hold the phone right over the bar.", tiltState(p)];
+  }
+  if (L > TILT.alongOk) return ["Hold it a little flatter", hint + Math.round(L) + "° along the bars; keep it under " + TILT.alongOk + "°.", tiltState(p)];
+  return ["Level across the bars ✓", hint + "Tipped " + Math.round(L) + "° along them; fine up to " + TILT.alongOk + "°.", "ok"];
+}
+
+// Draw the level: the zone the bubble should stay in is long along the bars
+// (forward tilt allowed) and narrow across them.
+function levelFrame(){
+  CAM.raf = requestAnimationFrame(levelFrame);
+  const cv = $("#camLevel"), r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if (cv.width !== W || cv.height !== H){ cv.width = W; cv.height = H; }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, r.width, r.height);
+  const p = tiltParts(), [main, small, state] = levelMessage(p);
+  setCamMsg(main, small, state);
+  if (!CAM.sensor || screenAngle() !== 0) return;
+  const SA = 9, SL = 3;                                     // screen px per degree across / along the bars
+  const color = {ok:"#4caf50", warn:"#ffc107", bad:"#ff5252"}[state] || "#fff";
+  const zone = (a, l) => { ctx.beginPath(); ctx.moveTo(-a, -l); ctx.lineTo(-a, l); ctx.arc(0, l, a, Math.PI, 0, true);
+                            ctx.lineTo(a, -l); ctx.arc(0, -l, a, 0, Math.PI, true); ctx.closePath(); };
+  ctx.save(); ctx.translate(r.width / 2, r.height / 2); ctx.rotate(barAngle());   // x across the bars, y along them
+  ctx.lineWidth = 2;
+  zone(TILT.acrossOk * SA, TILT.alongOk * SL); ctx.fillStyle = "rgba(76,175,80,.22)"; ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.stroke();
+  ctx.setLineDash([6, 5]); zone(TILT.acrossBad * SA, TILT.alongBad * SL); ctx.strokeStyle = "rgba(255,193,7,.9)"; ctx.stroke(); ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(14, 0); ctx.moveTo(0, -14); ctx.lineTo(0, 14); ctx.strokeStyle = "#fff"; ctx.stroke();
+  const lim = 0.45 * Math.min(r.width, r.height), clamp = v => Math.max(-lim, Math.min(lim, v));
+  ctx.beginPath(); ctx.arc(clamp(p.across * SA), clamp(p.along * SL), 13, 0, 2 * Math.PI);
+  ctx.fillStyle = color; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = "#000"; ctx.stroke();
+  ctx.restore();
+}
+
+async function takeCameraPhoto(){
+  const v = $("#camVideo");
+  if (!v.videoWidth) return;
+  $("#camShutter").disabled = true;
+  const cv = document.createElement("canvas"); cv.width = v.videoWidth; cv.height = v.videoHeight;
+  cv.getContext("2d").drawImage(v, 0, 0);
+  const p = CAM.sensor && screenAngle() === 0 ? tiltParts() : null;
+  const tilt = p ? {across:Math.abs(p.across), along:Math.abs(p.along), source:"sensor"} : null;
+  const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.92));
+  cv.width = cv.height = 0;
+  closeCamera();
+  if (!blob) return toast("Couldn’t take the photo. Try again, or use Phone camera.");
+  const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, ".");
+  addFiles([new File([blob], "Photo " + stamp + ".jpg", {type:"image/jpeg"})], {tilt});
+}
+
+/* ------------------------------------------------------------------ *
  *  Start-up
  * ------------------------------------------------------------------ */
 function init(){
@@ -650,7 +883,11 @@ function init(){
     });
   }
   showSite();
-  $("#shootBtn").addEventListener("click", () => { $("#shootInput").value = ""; $("#shootInput").click(); });
+  $("#shootBtn").addEventListener("click", openCamera);
+  $("#camClose").addEventListener("click", closeCamera);
+  $("#camShutter").addEventListener("click", takeCameraPhoto);
+  $("#camNative").addEventListener("click", () => { closeCamera(); phoneCamera(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) closeCamera(); });
   $("#pickBtn").addEventListener("click", () => { $("#pickInput").value = ""; $("#pickInput").click(); });
   for (const id of ["#shootInput", "#pickInput"])
     $(id).addEventListener("change", e => { if (e.target.files.length) addFiles([...e.target.files]); });
