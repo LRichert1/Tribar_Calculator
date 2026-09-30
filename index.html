@@ -74,7 +74,7 @@
   .tip{color:var(--muted);font-size:13px;margin:0 0 12px}
 
   /* ---------- Location ---------- */
-  .loc{display:grid;grid-template-columns:1.1fr 1.4fr .8fr .8fr 1fr;gap:12px}
+  .loc{display:grid;grid-template-columns:1.1fr 1.4fr .8fr .8fr 1fr;gap:12px;align-items:end}
   @media(max-width:640px){.loc{grid-template-columns:1fr 1fr}}
   .f label{display:block;font-weight:600;font-size:13px;margin-bottom:5px}
   .f .hint{font-weight:400;color:var(--muted)}
@@ -171,8 +171,8 @@
       <div class="f"><label for="fBarn">Barn</label><input class="text" id="fBarn" placeholder="e.g. Farrowing 2" autocomplete="off"></div>
       <div class="f"><label for="fRoom">Room</label><input class="text" id="fRoom" inputmode="numeric" autocomplete="off"></div>
       <div class="f"><label for="fRow">Row</label><input class="text" id="fRow" inputmode="numeric" autocomplete="off"></div>
-      <div class="f"><label for="fSide">Side</label>
-        <select class="text" id="fSide"><option value="">—</option><option>Front</option><option>Back</option></select></div>
+      <div class="f"><label for="fCrate"># of Crates from front of room</label>
+        <input class="text" id="fCrate" inputmode="numeric" placeholder="front crate = 1" autocomplete="off"></div>
     </div>
     <div class="f note"><label for="fNote">Note <span class="hint">(optional)</span></label><input class="text" id="fNote" autocomplete="off"></div>
   </section>
@@ -268,7 +268,7 @@ const widerWarning = loss => "This spot reads " + pct(-loss) + " wider than new 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const STATE = {
-  loc: {site:"", barn:"", room:"", row:"", side:"", note:""},
+  loc: {site:"", barn:"", room:"", row:"", crate:"", note:""},
   photos: [],      // the reading being taken: {id, name, status, msg, progress, result, pick (the tapped worst bar), ...}
   readings: [],    // saved readings, newest first
   marks: true,
@@ -282,6 +282,7 @@ function restore(){
   try{
     const d = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
     if (d){ Object.assign(STATE.loc, d.loc||{}); STATE.readings = d.readings||[]; if (d.marks===false) STATE.marks=false; }
+    delete STATE.loc.side;    // the old Front/Back field, replaced by the crate count
   }catch(e){/* start fresh */}
 }
 
@@ -292,7 +293,8 @@ function toast(msg){
 }
 
 function locLabel(r){
-  return [r.barn, r.room && "Room "+r.room, r.row && "Row "+r.row, r.side && r.side+" side"].filter(Boolean).join(" · ") || "No location";
+  return [r.barn, r.room && "Room "+r.room, r.row && "Row "+r.row,
+          r.crate ? "Crate "+r.crate+" from front" : r.side && r.side+" side"].filter(Boolean).join(" · ") || "No location";
 }
 
 /* ------------------------------------------------------------------ *
@@ -651,12 +653,12 @@ function renderSaved(){
 const csvCell = v => { const s = v == null ? "" : String(v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
 const pct1 = v => v == null ? "" : (100 * v).toFixed(1);
 function exportCSV(){
-  const head = ["Site","Barn","Room","Row","Side","Note","Cross-section loss band","Worst spot width loss %",
+  const head = ["Site","Barn","Room","Row","Crates from front of room","Note","Cross-section loss band","Worst spot width loss %",
                 "Readings at worst spot","Worst bar overall width loss %","Worst spot photo","Typical width loss %",
                 "Windows measured","Windows total","Photos","Baseline ratio","Saved","Worst spot photo tilt across bars (deg)"];
   const worstTilt = r => { const p = r.photos.find(q => q.pick && q.name === r.worstSpotPhoto) || r.photos.find(q => q.pick);
                            return p && p.tilt ? Math.round(p.tilt.across) : ""; };
-  const rows = STATE.readings.slice().reverse().map(r => [r.site, r.barn, r.room, r.row, r.side, r.note, BAND_TEXT[r.band],
+  const rows = STATE.readings.slice().reverse().map(r => [r.site, r.barn, r.room, r.row, r.crate || r.side, r.note, BAND_TEXT[r.band],
     pct1(r.worstSpot), r.worstSpotN, pct1(r.worstBar), r.worstSpotPhoto, pct1(r.typical), r.used, r.total,
     r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString(), worstTilt(r)]);
   const csv = [head, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
@@ -891,7 +893,7 @@ async function takeCameraPhoto(){
  * ------------------------------------------------------------------ */
 function init(){
   restore();
-  const fields = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fSide:"side", fNote:"note"};
+  const fields = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate:"crate", fNote:"note"};
   for (const [id, key] of Object.entries(fields)){
     const input = $("#" + id); input.value = STATE.loc[key] || "";
     input.addEventListener(input.tagName === "SELECT" ? "change" : "input", () => {
