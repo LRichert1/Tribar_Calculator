@@ -55,7 +55,7 @@
   .btn{
     border:1px solid var(--line-strong); background:#fff; color:var(--ink);
     padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;
-    display:inline-flex;align-items:center;gap:7px;transition:.12s;
+    display:inline-flex;align-items:center;gap:7px;transition:.12s;text-decoration:none;
   }
   .btn:hover{background:#f3f6f9}
   .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
@@ -157,6 +157,73 @@
   .cloud{font-size:12px;color:var(--muted);white-space:nowrap}
   .cloud.wait{color:#8a5a00}
   .spots{font-size:13px;color:var(--muted);margin:10px 0 0}
+  /* ---------- Dashboard and site pages ---------- */
+  .appbar a.logo{color:#fff;text-decoration:none}
+  .appbar .who{font-size:13px;opacity:.9;white-space:nowrap}
+  @media(max-width:520px){.appbar .sub{display:none}}
+  .nowrap{white-space:nowrap}
+  .crumbs{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 10px}
+  .crumbs a{color:var(--accent);text-decoration:none;font-weight:600;font-size:14px}
+  .vhead{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:4px 0 14px}
+  .vhead .acts{display:flex;gap:8px;flex-wrap:wrap}
+  .vtitle{margin:0;font-size:26px;line-height:1.2;color:var(--brand-700)}
+  .vsub{margin:4px 0 0;color:var(--muted);font-size:14px}
+  .btn.big{padding:11px 18px;font-size:15px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:14px 0}
+  .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:13px 17px}
+  .kpi b{display:block;font-size:25px;line-height:1.2;color:var(--brand-700)}
+  .kpi span{display:block;font-size:11.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin-top:3px}
+  .kpi.warn b{color:#a35a00}
+  .dtools{display:flex;align-items:flex-end;gap:10px 14px;flex-wrap:wrap;border-bottom:2px solid var(--line);margin:6px 0 14px}
+  .dtabs{display:flex;gap:2px;flex:1 1 auto}
+  .dtab{border:0;background:none;padding:10px 13px;font-size:15px;font-weight:600;color:var(--muted);border-bottom:3px solid transparent;
+        margin-bottom:-2px;cursor:pointer;white-space:nowrap}
+  .dtab.active{color:var(--brand);border-bottom-color:var(--brand)}
+  .dtab .tn{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;background:var(--line);color:var(--ink);font-size:12px}
+  .dtab.active .tn{background:var(--brand);color:#fff}
+  .search{width:220px;max-width:100%;margin-bottom:8px;border:1px solid var(--line-strong);border-radius:8px;padding:8px 11px;background:#fff}
+  .dtable{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid var(--line);border-radius:12px;
+          box-shadow:var(--shadow);overflow:hidden}
+  .dtable th{text-align:left;font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);background:#f0f3f6;
+             padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  .dtable td{padding:10px 12px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:middle}
+  .dtable tr:last-child td{border-bottom:none}
+  .dtable tr.go{cursor:pointer}
+  .dtable tr.go:hover td{background:#f7fafc}
+  .dtable tr.past td{color:var(--muted)}
+  .dtable td.lead b{color:var(--brand-700)}
+  .dtable td.acts{text-align:right;white-space:nowrap}
+  .dtable .small{display:block;color:var(--muted);font-size:12.5px}
+  .bandbar{display:flex;width:120px;height:10px;border-radius:5px;overflow:hidden;background:var(--line)}
+  .bandbar i{display:block;height:100%}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;background:#eef2f5;color:var(--muted);white-space:nowrap}
+  .pill.ok{background:#e7f4ea;color:#2e7d32}
+  .pill.wait{background:#fff4d6;color:#8a5a00}
+  .pill.done{background:var(--brand-50);color:var(--brand)}
+  .empty-big{text-align:center;padding:36px 16px;color:var(--muted);background:#fff;border:1px dashed var(--line-strong);border-radius:12px}
+  .legend{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin:-4px 0 14px}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  @media(max-width:700px){
+    .dtable thead{display:none}
+    .dtable,.dtable tbody,.dtable tr,.dtable td{display:block;width:100%}
+    .dtable tr{border-bottom:1px solid var(--line);padding:6px 0}
+    .dtable tr:last-child{border-bottom:none}
+    .dtable td{border:none;padding:3px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;text-align:right}
+    .dtable td::before{content:attr(data-label);color:var(--muted);font-size:11.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;text-align:left}
+    .dtable td.lead{font-size:16px;text-align:left}
+    .dtable td.lead::before,.dtable td.acts::before{content:none}
+    .dtable td.acts{justify-content:flex-end}
+    .search{width:100%}
+  }
+  /* the marked-up photo viewer */
+  .lb{position:fixed;inset:0;z-index:60;background:rgba(10,14,18,.94);display:flex;flex-direction:column;
+      padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
+  .lb-bar{display:flex;align-items:center;gap:8px;padding:10px 12px;color:#e8eaed;flex-wrap:wrap}
+  .lb-bar .t{flex:1;min-width:0;font-weight:600;font-size:14px}
+  .lb-img{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:0 8px 10px;overflow:auto}
+  .lb-img img{max-width:100%;max-height:100%;object-fit:contain;background:#fff}
+  .lb .btn{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.25)}
+
   .toast{
     position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
     background:var(--brand-700);color:#fff;padding:11px 18px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.25);
@@ -168,13 +235,39 @@
 <body>
 
 <div class="appbar">
-  <span class="logo">Johnson Engineering</span>
+  <a class="logo" href="#/">Johnson Engineering</a>
   <span class="sub">Tribar Corrosion</span>
   <span class="spacer"></span>
   <span class="siteTag" id="siteTag">📍 <b id="siteTagName"></b></span>
+  <span class="who" id="whoTag"></span>
 </div>
 
 <main class="wrap">
+  <!-- ============ DASHBOARD (home) ============ -->
+  <div id="dashView" hidden>
+    <div class="vhead">
+      <div><h1 class="vtitle">Dashboard</h1>
+        <p class="vsub">Every site's tribar readings in the team Dropbox folder, plus any on this iPad that aren't backed up yet.</p></div>
+      <button class="btn primary big" id="newReadingBtn">+ New reading</button>
+    </div>
+    <div class="sync" id="syncBar"><span class="msg" id="syncMsg"></span>
+      <button class="btn sm" id="syncBtn" hidden>⟳ Sync now</button>
+      <button class="btn sm primary" id="signInBtn" hidden>Sign in to Dropbox</button>
+      <button class="btn sm ghost" id="signOutBtn" hidden>Sign out</button></div>
+    <div class="kpis" id="dashKpis"></div>
+    <div class="dtools">
+      <div class="dtabs" id="dashTabs" role="tablist"></div>
+      <input class="search" id="dashSearch" type="search" placeholder="Search sites…" autocomplete="off">
+    </div>
+    <div id="dashTable"></div>
+  </div>
+
+  <!-- ============ ONE SITE ============ -->
+  <div id="siteView" hidden></div>
+
+  <!-- ============ MEASURING ============ -->
+  <div id="measureView" hidden>
+  <div class="crumbs" id="measureCrumbs"></div>
   <!-- ============ LOCATION ============ -->
   <section class="card">
     <div class="hdr"><h2>Location</h2></div>
@@ -217,14 +310,11 @@
   <!-- ============ SAVED READINGS ============ -->
   <section class="card">
     <div class="hdr">
-      <h2>Saved readings <span class="count" id="savedCount"></span></h2><span class="spacer"></span>
+      <h2>Saved on this iPad <span class="count" id="savedCount"></span></h2><span class="spacer"></span>
       <button class="btn sm primary" id="csvBtn">⬇ Export CSV</button>
       <button class="btn sm" id="clearBtn">Clear all</button>
     </div>
-    <div class="sync" id="syncBar"><span class="msg" id="syncMsg"></span>
-      <button class="btn sm" id="syncBtn" hidden>⟳ Sync now</button>
-      <button class="btn sm primary" id="signInBtn" hidden>Sign in to Dropbox</button>
-      <button class="btn sm ghost" id="signOutBtn" hidden>Sign out</button></div>
+    <p class="tip" id="savedTip" style="margin-top:0">Backup to Dropbox and every site's readings, this iPad's and the team's, are on the <a href="#/">Dashboard</a>.</p>
     <div id="saved"></div>
   </section>
 
@@ -232,7 +322,15 @@
     reported 1:1 as cross-section loss. The result is the worst spot you tap: the median width over one bar-spacing of
     length there, averaged over the photos of that spot (one photo is about ±9 points; the whole bar's median, shown
     alongside, is about ±5). The window percentages show the typical loss around it for comparison.</p>
+  </div>
 </main>
+
+<div class="lb" id="lightbox" hidden>
+  <div class="lb-bar"><span class="t" id="lbTitle"></span>
+    <button class="btn sm" id="lbPrev">‹</button><span id="lbN"></span><button class="btn sm" id="lbNext">›</button>
+    <button class="btn sm" id="lbShare">Share</button><button class="btn sm" id="lbClose">✕ Close</button></div>
+  <div class="lb-img"><img id="lbImg" alt="Marked-up photo"></div>
+</div>
 
 <div class="cam" id="cam" hidden>
   <div class="camView">
@@ -701,7 +799,7 @@ async function saveReading(){
   try{
     const id = uid(), worst = picked.slice().sort((a, b) => b.pick.loss - a.pick.loss)[0];
     const r = {
-      id, savedAt:new Date().toISOString(), ...STATE.loc,
+      id, savedAt:new Date().toISOString(), ...STATE.loc, by:(TribarSync.account() || {}).name || null,
       band:Tribar.grade(avg.loss), worstSpot:avg.loss, worstSpotRatio:avg.ratio, worstSpotN:avg.n, worstBar:avg.bar,
       spotsAveraged:avg.count, spotLosses:picked.map(p => p.pick.loss), spotSpread:avg.spread,
       worstSpotPhoto:worst.name,
@@ -902,7 +1000,8 @@ const fileLabel = r => [r.barn, r.room && "Room " + r.room, r.row && "Row " + r.
 function renderSync(){
   const signed = TribarSync.signedIn(), acct = TribarSync.account(), left = unsynced(), bar = $("#syncBar");
   $("#signInBtn").hidden = signed; $("#signOutBtn").hidden = !signed;
-  $("#syncBtn").hidden = !signed || SYNC.busy;
+  $("#syncBtn").hidden = !signed || SYNC.busy || TEAM.busy;
+  $("#whoTag").textContent = signed ? (acct && acct.name ? acct.name : "Signed in") : "Not signed in";
   bar.classList.toggle("err", !!SYNC.error);
   const m = $("#syncMsg"); m.innerHTML = "";
   const parts = [];
@@ -916,6 +1015,11 @@ function renderSync(){
                               (navigator.onLine === false ? "; will upload when there's signal." : "."));
     else if (TribarSync.pendingCsv()) parts.push("all readings backed up; a site summary (CSV) still to update.");
     else parts.push("all readings backed up" + (SYNC.last ? " (" + SYNC.last.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) + ")" : "") + ".");
+    // the team folder, as the dashboard shows it
+    const at = TEAM.index && new Date(TEAM.index.at), time = at && (at.toDateString() === new Date().toDateString()
+      ? at.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : at.toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}));
+    parts.push(" " + (TEAM.busy ? "Checking the team folder…" : TEAM.error ? "Team folder: " + TEAM.error
+      : at ? "Team folder checked " + time + (navigator.onLine === false ? " (no signal now)." : ".") : "Team folder not checked yet."));
   }
   for (const p of parts) m.appendChild(typeof p === "string" ? document.createTextNode(p) : p);
 }
@@ -923,7 +1027,7 @@ async function sync(ev){
   if (SYNC.busy){ SYNC.again = true; return; }          // saved while an upload was running: go again when it ends
   const asked = ev && ev.type === "click";
   if (!TribarSync.signedIn() || !syncWork()){
-    if (asked && TribarSync.signedIn()) toast("Everything on this device is backed up.");
+    if (asked && TribarSync.signedIn()) refreshTeam(true);      // nothing to upload: just look at the team folder again
     renderSync(); return;
   }
   if (asked && navigator.onLine === false) toast("No signal. Readings will upload when there is.");
@@ -937,16 +1041,18 @@ async function sync(ev){
   }catch(e){ SYNC.error = e.message || String(e); }
   SYNC.busy = false;
   renderSaved();
+  if (VIEW.name !== "measure") refreshTeam(true);       // show what just went up as the team's
   if (SYNC.again){ SYNC.again = false; if (!SYNC.error) sync(); }
 }
 function signIn(){
   if (STATE.photos.length && !confirm("Signing in leaves the app for a moment and the photos for this reading will be lost. Sign in anyway?")) return;
+  try{ localStorage.setItem("tribar.returnTo", location.hash || "#/"); }catch(e){}   // come back to the same page
   TribarSync.signIn().catch(e => toast("Couldn’t start the Dropbox sign-in: " + e.message));
 }
 async function signOut(){
   const left = unsynced();
   if (!confirm("Sign out of Dropbox?" + (left ? " " + left + " reading" + (left === 1 ? " hasn’t" : "s haven’t") + " been backed up yet; they stay on this device." : ""))) return;
-  await TribarSync.signOut(); SYNC.error = null; renderSync();
+  await TribarSync.signOut(); SYNC.error = null; TEAM.error = null; renderSync(); redrawTeamViews();
 }
 
 function downloadBlob(filename, blob){
@@ -1194,13 +1300,265 @@ async function takeCameraPhoto(){
 /* ------------------------------------------------------------------ *
  *  Start-up
  * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ *
+ *  Pages: the dashboard (home), one site, and measuring. Like the other
+ *  JEG Dropbox apps, the home page is a dashboard of every site in the
+ *  team folder; measuring is one tap away and works as before.
+ *    #/             dashboard
+ *    #/site/<name>  one site's readings
+ *    #/measure      take a reading
+ * ------------------------------------------------------------------ */
+const VIEW = {name:"dash", site:""};
+const TEAM = {index:null, busy:false, error:null, tab:"all", q:"", loaded:false};
+const BANDS = Object.keys(BAND_COLORS);                    // lowest loss first
+
+function route(){
+  const h = location.hash || "", m = /^#\/site\/(.*)$/.exec(h);
+  const was = VIEW.name;
+  VIEW.name = /^#\/measure/.test(h) ? "measure" : m ? "site" : "dash";
+  if (m) VIEW.site = decodeURIComponent(m[1]);
+  for (const v of ["dash", "site", "measure"]) $("#" + v + "View").hidden = VIEW.name !== v;
+  showSite();
+  if (VIEW.name === "measure") renderCrumbs(); else redrawTeamViews();
+  if (was !== VIEW.name || VIEW.name === "site") window.scrollTo(0, 0);
+  if (VIEW.name !== "measure") refreshTeam(false);
+}
+const go = h => { if (location.hash === h) route(); else location.hash = h; };
+const siteHash = name => "#/site/" + encodeURIComponent(name || "No site");
+
+function renderCrumbs(){
+  const c = $("#measureCrumbs"); c.innerHTML = "";
+  c.appendChild(el("a", {href:"#/", text:"‹ Dashboard"}));
+  if (STATE.loc.site) c.appendChild(el("a", {href:siteHash(STATE.loc.site), text:"‹ " + STATE.loc.site}));
+}
+
+// The team folder's index: the copy on the device first, then a fresh look when there's signal
+async function refreshTeam(force){
+  if (!TEAM.loaded){ TEAM.loaded = true; TEAM.index = await TribarSync.cachedIndex(); redrawTeamViews(); }
+  if (TEAM.busy || !TribarSync.signedIn() || navigator.onLine === false) return redrawTeamViews();
+  if (!force && TEAM.index && Date.now() - TEAM.index.at < 60000) return;
+  TEAM.busy = true; TEAM.error = null; redrawTeamViews();
+  try{ TEAM.index = await TribarSync.teamIndex(STATE.readings); }
+  catch(e){ TEAM.error = e.code === "offline" ? null : e.message; }
+  TEAM.busy = false; redrawTeamViews();
+}
+function redrawTeamViews(){
+  renderSync();
+  if (VIEW.name === "dash") renderDash();
+  else if (VIEW.name === "site") renderSitePage();
+}
+
+// Every reading the app knows of: the team folder's, and this iPad's (backed up or not), once each
+function allReadings(){
+  const out = new Map(), idx = TEAM.index;
+  if (idx) for (const e of Object.values(idx.readings)) out.set(e.r.id, {r:e.r, key:e.key, dir:e.dir, team:true, local:null});
+  for (const r of STATE.readings){
+    const was = out.get(r.id);
+    out.set(r.id, {r, key:TribarSync.siteKey(r.site), dir:was ? was.dir : null, team:!!was, local:r});
+  }
+  return [...out.values()];
+}
+const worstBand = list => list.reduce((w, e) => BANDS.indexOf(e.r.band) > BANDS.indexOf(w) ? e.r.band : w, null);
+const waiting = e => e.local && !e.local.synced;
+function allSites(){
+  const sites = new Map(), idx = TEAM.index;
+  if (idx) for (const [key, s] of Object.entries(idx.sites)) sites.set(key, Object.assign({key, readings:[]}, s));
+  for (const e of allReadings()){
+    let s = sites.get(e.key);
+    if (!s){ s = {key:e.key, name:e.r.site || "No site", status:"current", readings:[]}; sites.set(e.key, s); }
+    if (e.local && e.r.site) s.name = e.r.site;              // the name as typed rather than as a folder name
+    s.readings.push(e);
+  }
+  for (const s of sites.values()){
+    s.last = s.readings.reduce((m, e) => (e.r.savedAt || "") > m ? e.r.savedAt : m, "");
+    s.worst = worstBand(s.readings);
+    s.barns = new Set(s.readings.map(e => String(e.r.barn || "").trim().toLowerCase()).filter(Boolean)).size;
+    s.waiting = s.readings.filter(waiting).length;
+  }
+  return [...sites.values()];
+}
+const fmtDay = iso => iso ? new Date(iso).toLocaleDateString([], {month:"short", day:"numeric", year:"numeric"}) : "—";
+const bandChip = band => band ? el("span", {class:"chip", text:BAND_TEXT[band], style:"background:" + BAND_COLORS[band]}) : el("span", {class:"pill", text:"—"});
+function bandBar(list){
+  const bar = el("div", {class:"bandbar"}), n = list.length;
+  for (const b of BANDS){
+    const k = list.filter(e => e.r.band === b).length;
+    if (k) bar.appendChild(el("i", {style:"width:" + (100 * k / n) + "%;background:" + BAND_COLORS[b], title:BAND_TEXT[b] + ": " + k}));
+  }
+  bar.title = BANDS.map(b => [b, list.filter(e => e.r.band === b).length]).filter(x => x[1]).map(([b, k]) => BAND_TEXT[b] + ": " + k).join(", ");
+  return bar;
+}
+const kpi = (value, label, cls) => el("div", {class:"kpi" + (cls ? " " + cls : "")}, [typeof value === "string" || typeof value === "number" ? el("b", {text:String(value)}) : value, el("span", {text:label})]);
+const td = (label, kids, cls) => el("td", {"data-label":label, class:cls || null}, kids);
+function siteStatus(s){
+  if (s.status === "past") return el("span", {class:"pill done", text:"Completed" + (s.statusAt ? " " + fmtDay(s.statusAt) : "")});
+  if (s.waiting) return el("span", {class:"pill wait", text:"⏳ " + s.waiting + " not backed up"});
+  if (s.readings.some(e => e.team)) return el("span", {class:"pill ok", text:"☁ Backed up"});
+  return el("span", {class:"pill", text:"This iPad"});
+}
+
+/* ---------------- dashboard ---------------- */
+function renderDash(){
+  const sites = allSites(), q = TEAM.q.trim().toLowerCase();
+  const TABS = [["all", "All sites"], ["current", "Current"], ["past", "Past"]];
+  const inTab = (s, t) => t === "all" || (t === "past" ? s.status === "past" : s.status !== "past");
+  const list = sites.filter(s => inTab(s, TEAM.tab) && (!q || s.name.toLowerCase().includes(q)));
+  const readings = list.flatMap(s => s.readings), worst = worstBand(readings), left = unsynced();
+
+  const k = $("#dashKpis"); k.innerHTML = "";
+  k.appendChild(kpi(list.length, "Sites"));
+  k.appendChild(kpi(readings.length, "Readings"));
+  k.appendChild(kpi(worst ? el("b", {text:BAND_TEXT[worst], style:"color:" + BAND_COLORS[worst]}) : "—", "Worst reading"));
+  k.appendChild(kpi(left, "Not backed up (this iPad)", left ? "warn" : ""));
+
+  const tabs = $("#dashTabs"); tabs.innerHTML = "";
+  for (const [t, label] of TABS){
+    const b = el("button", {class:"dtab" + (t === TEAM.tab ? " active" : ""), role:"tab", "aria-selected":String(t === TEAM.tab),
+      onclick:() => { TEAM.tab = t; renderDash(); }}, [label, el("span", {class:"tn", text:String(sites.filter(s => inTab(s, t)).length)})]);
+    tabs.appendChild(b);
+  }
+
+  const box = $("#dashTable"); box.innerHTML = "";
+  if (!list.length){
+    const msg = sites.length ? (q ? "No site matches “" + TEAM.q.trim() + "”." : TEAM.tab === "past" ? "No completed sites. Open a site and tap Mark complete when its readings are done."
+                                                                              : "Every site is marked complete.")
+      : TEAM.busy ? "Checking the team folder…"
+      : "No readings yet. Tap + New reading to take the first one." + (TribarSync.signedIn() ? "" : " Sign in to Dropbox to see the team's readings too.");
+    box.appendChild(el("div", {class:"empty-big", text:msg}));
+    return;
+  }
+  // sites in progress first, newest reading first; completed sites after
+  list.sort((a, b) => ((a.status === "past") - (b.status === "past")) || String(b.last).localeCompare(String(a.last)));
+  const tb = el("tbody");
+  for (const s of list){
+    tb.appendChild(el("tr", {class:"go" + (s.status === "past" ? " past" : ""), onclick:() => go(siteHash(s.name))}, [
+      td("Site", [el("b", {text:s.name})], "lead"),
+      td("Readings", [String(s.readings.length)]),
+      td("Worst", [bandChip(s.worst)]),
+      td("By band", [bandBar(s.readings)]),
+      td("Barns", [String(s.barns)]),
+      td("Last reading", [fmtDay(s.last)]),
+      td("Status", [siteStatus(s)]),
+      td("", [el("button", {class:"btn sm", text:"Open →", onclick:ev => { ev.stopPropagation(); go(siteHash(s.name)); }})], "acts"),
+    ]));
+  }
+  box.appendChild(el("table", {class:"dtable"}, [el("thead", {}, [el("tr", {}, ["Site", "Readings", "Worst", "By band", "Barns", "Last reading", "Status", ""].map(h => el("th", {text:h})))]), tb]));
+}
+
+/* ---------------- one site ---------------- */
+// Readings in walking order: barn, room, row, crate, then oldest first
+const natural = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, {numeric:true, sensitivity:"base"});
+const byLocation = (a, b) => natural(a.r.barn, b.r.barn) || natural(a.r.room, b.r.room) || natural(a.r.row, b.r.row) ||
+                             natural(a.r.crate || a.r.side, b.r.crate || b.r.side) || String(a.r.savedAt).localeCompare(String(b.r.savedAt));
+function renderSitePage(){
+  const key = TribarSync.siteKey(VIEW.site);
+  const s = allSites().find(x => x.key === key) || {key, name:VIEW.site, status:"current", readings:[], barns:0, waiting:0};
+  const box = $("#siteView"); box.innerHTML = "";
+  box.appendChild(el("div", {class:"crumbs"}, [el("a", {href:"#/", text:"‹ Dashboard"})]));
+  const past = s.status === "past";
+  box.appendChild(el("div", {class:"vhead"}, [
+    el("div", {}, [el("h1", {class:"vtitle", text:s.name}),
+      el("p", {class:"vsub", text:[s.readings.length + " reading" + (s.readings.length === 1 ? "" : "s"), s.last ? "last " + fmtDay(s.last) : null,
+        past ? "marked complete" + (s.statusBy ? " by " + s.statusBy : "") + (s.statusAt ? " " + fmtDay(s.statusAt) : "") : null].filter(Boolean).join(" · ")})]),
+    el("div", {class:"acts"}, [
+      el("button", {class:"btn", text:past ? "Reopen" : "✓ Mark complete", onclick:() => markSite(s, past ? "current" : "past")}),
+      s.readings.length ? el("button", {class:"btn", text:"⬇ CSV", onclick:() => siteCsv(s)}) : null,
+      el("a", {class:"btn", href:TribarSync.dropboxUrl(s.name), target:"_blank", rel:"noopener", text:"Open in Dropbox"}),
+      el("button", {class:"btn primary big", text:"+ New reading here", onclick:() => newReadingAt(s.name)}),
+    ]),
+  ]));
+  const k = el("div", {class:"kpis"}); box.appendChild(k);
+  k.appendChild(kpi(s.readings.length, "Readings"));
+  k.appendChild(kpi(s.worst ? el("b", {text:BAND_TEXT[s.worst], style:"color:" + BAND_COLORS[s.worst]}) : "—", "Worst reading"));
+  k.appendChild(kpi(s.barns, "Barns"));
+  k.appendChild(kpi(s.waiting, "Not backed up", s.waiting ? "warn" : ""));
+  if (!s.readings.length){
+    box.appendChild(el("div", {class:"empty-big", text:TEAM.busy ? "Checking the team folder…" : "No readings at this site yet."}));
+    return;
+  }
+  box.appendChild(el("div", {class:"legend"}, BANDS.filter(b => s.readings.some(e => e.r.band === b)).map(b =>
+    el("span", {}, [el("i", {style:"background:" + BAND_COLORS[b]}), BAND_TEXT[b] + ": " + s.readings.filter(e => e.r.band === b).length]))));
+  const tb = el("tbody");
+  for (const e of s.readings.slice().sort(byLocation)){
+    const r = e.r, marked = (r.files || []).filter(f => f.kind === "marked" && !f.lost);
+    tb.appendChild(el("tr", {}, [
+      td("Location", [el("b", {text:locLabel(r)}), r.note ? el("span", {class:"small", text:r.note}) : null], "lead"),
+      td("Loss", [bandChip(r.band)]),
+      td("Worst spot", [r.worstSpot != null ? pct(r.worstSpot) : "—",
+        r.spotsAveraged > 1 ? el("span", {class:"small", text:"avg of " + r.spotsAveraged + ", spread " + pts(r.spotSpread)}) : el("span", {class:"small", text:"1 photo"})]),
+      td("That bar", [r.worstBar != null ? pct(r.worstBar) : "—"]),
+      td("Saved", [el("span", {class:"nowrap", text:fmtDay(r.savedAt)}), r.by ? el("span", {class:"small", text:r.by}) : null]),
+      td("Backup", [waiting(e) ? el("span", {class:"pill wait", text:"⏳ This iPad only"}) : el("span", {class:"pill ok", text:"☁ Backed up"})]),
+      td("", [marked.length ? el("button", {class:"btn sm", text:"🖼 Photo" + (marked.length > 1 ? "s" : ""), onclick:() => openPhotos(e)}) : null], "acts"),
+    ]));
+  }
+  box.appendChild(el("table", {class:"dtable"}, [el("thead", {}, [el("tr", {}, ["Location", "Loss", "Worst spot", "That bar", "Saved", "Backup", ""].map(h => el("th", {text:h})))]), tb]));
+}
+function newReadingAt(site){
+  if (site && STATE.loc.site !== site){                     // another site: its own barns and rooms
+    Object.assign(STATE.loc, {site, barn:"", room:"", row:"", crate:"", note:""});
+    for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
+    persist(); renderResult();
+  }
+  go("#/measure");
+}
+async function markSite(s, status){
+  if (!TribarSync.signedIn()) return toast("Sign in to Dropbox first: the site's status is kept in the team folder for everyone.");
+  if (navigator.onLine === false) return toast("No signal. Mark it when there is.");
+  if (status === "past" && !confirm("Mark " + s.name + " complete? It moves to the Past tab for everyone. You can reopen it.")) return;
+  try{ await TribarSync.setSiteStatus(s.name, status); toast(s.name + (status === "past" ? " marked complete." : " reopened.")); }
+  catch(e){ return toast("Couldn’t update the site: " + e.message); }
+  await refreshTeam(true);
+}
+function siteCsv(s){
+  const rows = s.readings.map(e => e.r).sort((a, b) => String(a.savedAt).localeCompare(String(b.savedAt)));
+  shareOrDownload("Tribar readings - " + TribarSync.folderName(s.name) + " - " + new Date().toISOString().slice(0, 10) + ".csv",
+                  new Blob([csvFor(rows)], {type:"text/csv"}), "text/csv");
+}
+
+/* ---------------- the marked-up photo viewer ---------------- */
+const LB = {files:[], urls:[], i:0};
+async function openPhotos(e){
+  const r = e.r, files = [];
+  toast("Loading the photo…");
+  for (const f of (r.files || []).filter(f => f.kind === "marked" && !f.lost)){
+    let blob = null;
+    const mine = e.local && (e.local.files || []).find(x => x.suffix === f.suffix && x.key);
+    if (mine) blob = await TribarSync.IDB.get(mine.key).catch(() => null);
+    if (!blob && f.dropboxName && (e.dir || r.site)) blob = await TribarSync.teamFile(e.dir || ("/" + TribarSync.CONFIG.folder + "/" + TribarSync.folderName(r.site)), f.dropboxName).catch(() => null);
+    if (blob) files.push(new File([blob], [r.site, fileLabel(r), f.suffix].filter(Boolean).join(" - ").replace(/[\\/:*?"<>|]+/g, "-"), {type:"image/jpeg"}));
+  }
+  $("#toast").classList.remove("show");
+  if (!files.length) return toast(navigator.onLine === false ? "That photo is in Dropbox; it needs signal to open." : "Couldn’t open the marked-up photo.");
+  closePhotos();
+  Object.assign(LB, {files, urls:files.map(f => URL.createObjectURL(f)), i:0, title:locLabel(r) + (r.site ? " · " + r.site : "")});
+  $("#lightbox").hidden = false; showPhoto();
+}
+function showPhoto(){
+  $("#lbImg").src = LB.urls[LB.i];
+  $("#lbTitle").textContent = LB.title;
+  $("#lbN").textContent = (LB.i + 1) + " of " + LB.files.length;
+  $("#lbPrev").hidden = $("#lbNext").hidden = $("#lbN").hidden = LB.files.length < 2;
+}
+function closePhotos(){
+  $("#lightbox").hidden = true; $("#lbImg").removeAttribute("src");
+  for (const u of LB.urls) URL.revokeObjectURL(u);
+  LB.urls = []; LB.files = [];
+}
+async function sharePhoto(){
+  const f = LB.files[LB.i]; if (!f) return;
+  try{ if (navigator.canShare && navigator.canShare({files:[f]})){ await navigator.share({files:[f], title:LB.title}); return; } }
+  catch(e){ if (e && e.name === "AbortError") return; }
+  downloadBlob(f.name, f);
+}
+
+const LOC_FIELDS = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate:"crate", fNote:"note"};
 function init(){
   restore();
-  const fields = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate:"crate", fNote:"note"};
-  for (const [id, key] of Object.entries(fields)){
+  for (const [id, key] of Object.entries(LOC_FIELDS)){
     const input = $("#" + id); input.value = STATE.loc[key] || "";
     input.addEventListener(input.tagName === "SELECT" ? "change" : "input", () => {
-      STATE.loc[key] = input.value.trim(); persist(); showSite(); renderResult();
+      STATE.loc[key] = input.value.trim(); persist(); showSite(); renderResult(); if (key === "site") renderCrumbs();
     });
   }
   showSite();
@@ -1232,14 +1590,27 @@ function init(){
   setInterval(() => { if (syncWork() && !SYNC.busy) sync(); }, 120000);
   // ask the browser not to clear stored photos when space runs low (home-screen apps usually get this anyway)
   try{ if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }catch(e){}
+  // pages
+  $("#newReadingBtn").addEventListener("click", () => go("#/measure"));
+  $("#dashSearch").addEventListener("input", e => { TEAM.q = e.target.value; renderDash(); });
+  $("#lbClose").addEventListener("click", closePhotos);
+  $("#lbPrev").addEventListener("click", () => { LB.i = (LB.i + LB.files.length - 1) % LB.files.length; showPhoto(); });
+  $("#lbNext").addEventListener("click", () => { LB.i = (LB.i + 1) % LB.files.length; showPhoto(); });
+  $("#lbShare").addEventListener("click", sharePhoto);
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#lightbox").hidden) closePhotos(); });
+  window.addEventListener("hashchange", route);
   renderPhotos(); renderResult(); renderSaved();
+  route();
   TribarSync.init().catch(e => ({error:e.message})).then(({error}) => {
     if (error) toast("Dropbox: " + error);
-    renderSync(); sync();
+    // back from the Dropbox sign-in: return to the page it was started from
+    let back = null; try{ back = localStorage.getItem("tribar.returnTo"); localStorage.removeItem("tribar.returnTo"); }catch(e){}
+    if (back && back !== location.hash) location.hash = back;
+    renderSync(); sync(); refreshTeam(true);
   });
 }
 function showSite(){
-  $("#siteTag").style.display = STATE.loc.site ? "inline-flex" : "none";
+  $("#siteTag").style.display = STATE.loc.site && VIEW.name === "measure" ? "inline-flex" : "none";
   $("#siteTagName").textContent = STATE.loc.site;
 }
 document.addEventListener("DOMContentLoaded", init);
