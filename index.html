@@ -1343,9 +1343,16 @@ async function refreshTeam(force){
   TEAM.busy = false; redrawTeamViews();
 }
 function redrawTeamViews(){
-  renderSync();
-  if (VIEW.name === "dash") renderDash();
-  else if (VIEW.name === "site") renderSitePage();
+  try{
+    renderSync();
+    if (VIEW.name === "dash") renderDash();
+    else if (VIEW.name === "site") renderSitePage();
+  }catch(e){      // say so, rather than leave a blank page
+    console.error(e);
+    const box = VIEW.name === "site" ? $("#siteView") : $("#dashTable");
+    box.textContent = "";
+    box.appendChild(el("div", {class:"empty-big", text:"Couldn’t show this page (" + e.message + "). Close the app and open it again with signal to finish updating it."}));
+  }
 }
 
 // Every reading the app knows of: the team folder's, and this iPad's (backed up or not), once each
@@ -1393,7 +1400,7 @@ const td = (label, kids, cls) => el("td", {"data-label":label, class:cls || null
 function siteStatus(s){
   if (s.status === "past") return el("span", {class:"pill done", text:"Completed" + (s.statusAt ? " " + fmtDay(s.statusAt) : "")});
   if (s.waiting) return el("span", {class:"pill wait", text:"⏳ " + s.waiting + " not backed up"});
-  if (s.readings.some(e => e.team)) return el("span", {class:"pill ok", text:"☁ Backed up"});
+  if (s.readings.some(e => e.team || (e.local && e.local.synced))) return el("span", {class:"pill ok", text:"☁ Backed up"});
   return el("span", {class:"pill", text:"This iPad"});
 }
 
@@ -1553,7 +1560,25 @@ async function sharePhoto(){
 }
 
 const LOC_FIELDS = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate:"crate", fNote:"note"};
+
+// This page and sync.js have to come from the same release. For a few minutes after an update a browser can pair
+// the new page with its cached copy of the old sync.js (GitHub Pages lets browsers keep files for 10 minutes), which
+// leaves the dashboard blank. If they don't match, fetch the app's files fresh and reload, once.
+const SYNC_VERSION = 2;
+function scriptsMatch(){
+  if (window.TribarSync && TribarSync.VERSION === SYNC_VERSION){ try{ sessionStorage.removeItem("tribar.refetched"); }catch(e){} return true; }
+  let tried = true;
+  try{ tried = sessionStorage.getItem("tribar.refetched") === "1"; sessionStorage.setItem("tribar.refetched", "1"); }catch(e){}
+  if (tried) return false;                                   // already tried (no signal?): carry on with what's here
+  Promise.all(["./", "./index.html", "./sync.js", "./tribar.js", "./worker.js"].map(u => fetch(u, {cache:"reload"}).catch(() => null)))
+    .then(() => location.reload());
+  return null;
+}
+
 function init(){
+  const match = scriptsMatch();
+  if (match === null) return;                                // reloading with fresh files
+  if (match === false) setTimeout(() => toast("The app didn’t finish updating. Close it and open it again with signal."), 500);
   restore();
   for (const [id, key] of Object.entries(LOC_FIELDS)){
     const input = $("#" + id); input.value = STATE.loc[key] || "";
@@ -1600,7 +1625,7 @@ function init(){
   document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#lightbox").hidden) closePhotos(); });
   window.addEventListener("hashchange", route);
   renderPhotos(); renderResult(); renderSaved();
-  route();
+  try{ route(); }catch(e){ console.error(e); }               // a page that can't draw mustn't stop Dropbox starting
   TribarSync.init().catch(e => ({error:e.message})).then(({error}) => {
     if (error) toast("Dropbox: " + error);
     // back from the Dropbox sign-in: return to the page it was started from

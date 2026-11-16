@@ -4,7 +4,9 @@
    re-uploaded version is picked up automatically the next time the phone
    has signal — no version bump needed. (Bump CACHE only to force-clear the
    offline copy.) */
-const CACHE = "tribar-v2";
+/* tribar-v3: scripts are revalidated with the server on every load, and the
+   offline copy is filled from the server rather than the browser's cache. */
+const CACHE = "tribar-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -22,7 +24,8 @@ self.addEventListener("install", (e) => {
   // install (the fetch handler below still falls back to the cached shell).
   e.waitUntil(
     caches.open(CACHE)
-      .then((cache) => Promise.all(ASSETS.map((url) => cache.add(url).catch(() => {}))))
+      // straight from the server, not the browser's cache, which can still hold the previous release's files
+      .then((cache) => Promise.all(ASSETS.map((url) => cache.add(new Request(url, { cache: "reload" })).catch(() => {}))))
       .then(() => self.skipWaiting())
   );
 });
@@ -43,10 +46,12 @@ self.addEventListener("fetch", (e) => {
   const isScript = /\.js(\?|$)/.test(new URL(req.url).pathname);
   if (isDoc || isScript) {
     // Network-first: pick up a newer version whenever there's signal, fall
-    // back to the cached copy when offline.
+    // back to the cached copy when offline. Scripts are checked with the
+    // server every time (a quick "not modified" when nothing changed), so a
+    // new page never runs with the browser's cached copy of an old script.
     const key = isDoc ? "./index.html" : req;
     e.respondWith(
-      fetch(req)
+      fetch(isScript && !isDoc ? new Request(req, { cache: "no-cache" }) : req)
         .then((res) => {
           if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(key, copy)); }
           return res;

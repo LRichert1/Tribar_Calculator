@@ -451,14 +451,35 @@ async function main() {
     await p5.goto(APP);
     await p5.evaluate(() => navigator.serviceWorker.ready);
     await p5.waitForTimeout(800);
-    const cached = await p5.evaluate(async () => { const c = await caches.open("tribar-v2"); return (await c.keys()).map(r => new URL(r.url).pathname.split("/").pop()); });
-    ok(cached.includes("sync.js") && cached.includes("tribar.js"), "offline cache tribar-v2 holds sync.js: " + cached.join(", "));
+    const CACHE = /const CACHE = "([^"]+)"/.exec(fs.readFileSync(path.join(ROOT, "sw.js"), "utf8"))[1];
+    const cached = await p5.evaluate(async c => { const cc = await caches.open(c); return (await cc.keys()).map(r => new URL(r.url).pathname.split("/").pop()); }, CACHE);
+    ok(cached.includes("sync.js") && cached.includes("tribar.js"), "offline cache " + CACHE + " holds sync.js: " + cached.join(", "));
     const names = await p5.evaluate(() => caches.keys());
-    ok(names.includes("ventsizing-v2") && !names.includes("tribar-v1"), "update clears the old tribar-v1 cache and keeps Ventilation's (" + names.join(", ") + ")");
+    ok(names.includes("ventsizing-v2") && !names.includes("tribar-v1") && names.includes(CACHE), "update clears the old tribar-v1 cache and keeps Ventilation's (" + names.join(", ") + ")");
     await c5.setOffline(true);
     await p5.reload();
     ok(await p5.evaluate(() => typeof TribarSync === "object" && typeof Tribar === "object"), "reloads offline with both scripts");
     await c5.close();
+  }
+
+  /* ---- a new page with the browser's cached copy of the previous sync.js ---- */
+  {
+    const OLD = fs.readFileSync(path.join(ROOT, "sync.js"), "utf8").replace("{VERSION, CONFIG", "{CONFIG").replace("siteKey, ", "");
+    for (const [what, oldTimes] of [["once", 1], ["every time (no way to get the new one)", 99]]) {
+      const c6 = await browser.newContext({serviceWorkers: "block"});
+      let served = 0, loads = 0;
+      await c6.route("**/Tribar_Calculator/sync.js*", route => (++served <= oldTimes)
+        ? route.fulfill({status: 200, contentType: "text/javascript", body: OLD}) : route.continue());
+      await c6.addInitScript(() => { if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: [
+        {id: "cccc3333", savedAt: "2026-11-16T17:25:00Z", site: "c44", barn: "farrowing", band: "0-10%", worstSpot: 0.02, photos: [], files: [], synced: "2026-11-16T17:26:00Z"}]})); });
+      const p6 = await c6.newPage(); p6.on("load", () => loads++);
+      await p6.goto(APP); await p6.waitForTimeout(2500);
+      const kpis = await p6.$$eval("#dashKpis .kpi", k => k.length), msg = (await p6.textContent("#dashTable")).trim();
+      if (oldTimes === 1) ok(kpis === 4 && /c44/.test(msg) && loads === 2 && await p6.evaluate(() => !sessionStorage.getItem("tribar.refetched")),
+                             "old sync.js " + what + ": fetched fresh, reloaded once, dashboard shows c44 (" + loads + " loads)");
+      else ok(loads === 2 && /Couldn’t show this page/.test(msg), "old sync.js " + what + ": one reload, then a message instead of a blank page (" + loads + " loads): " + msg.slice(0, 70));
+      await c6.close();
+    }
   }
 
   await browser.close(); server.close();
