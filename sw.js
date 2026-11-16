@@ -4,11 +4,12 @@
    re-uploaded version is picked up automatically the next time the phone
    has signal — no version bump needed. (Bump CACHE only to force-clear the
    offline copy.) */
-const CACHE = "tribar-v1";
+const CACHE = "tribar-v2";
 const ASSETS = [
   "./",
   "./index.html",
   "./tribar.js",
+  "./sync.js",
   "./worker.js",
   "./manifest.webmanifest",
   "./icon-180.png",

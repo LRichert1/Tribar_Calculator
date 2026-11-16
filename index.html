@@ -23,6 +23,7 @@
     --radius:10px;
   }
   *{box-sizing:border-box}
+  [hidden]{display:none !important}
   html,body{margin:0;padding:0}
   body{
     font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
@@ -145,6 +146,16 @@
   .ph-line.warnline{color:#8a5a00;background:#fff4d6}
   .ph-line.badline{color:var(--danger);background:var(--danger-bg)}
 
+  .camRes{position:absolute;left:12px;bottom:10px;padding:4px 9px;border-radius:7px;background:rgba(0,0,0,.62);
+          font-size:12.5px;font-weight:600;color:#e8eaed}
+  .camRes.low{color:#ffd166}
+  .sync{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--bg);border-radius:8px;padding:8px 11px;margin:0 0 10px;font-size:13.5px}
+  .sync .msg{flex:1;min-width:180px;color:var(--muted)}
+  .sync .msg b{color:var(--ink)}
+  .sync.err .msg{color:var(--danger)}
+  .cloud{font-size:12px;color:var(--muted);white-space:nowrap}
+  .cloud.wait{color:#8a5a00}
+  .spots{font-size:13px;color:var(--muted);margin:10px 0 0}
   .toast{
     position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
     background:var(--brand-700);color:#fff;padding:11px 18px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.25);
@@ -192,8 +203,9 @@
     <div id="photos"></div>
     <div id="photoTools" hidden style="margin-top:12px">
       <p class="tip" style="margin-bottom:6px"><b>Tap the worst spot on the worst bar.</b> The app measures the bar's width over
-        one bar-spacing of length centred where you tap; the worst spot you tap is the result. Tap it again to clear it.
-        Zoom in with two fingers to place it precisely.</p>
+        one bar-spacing of length centred where you tap. Tap it again to clear it; zoom in with two fingers to place it precisely.
+        <b>Take 3 photos of that same spot</b>, reframing a little each time, and tap it in each: the result is their average,
+        which is tighter than one photo. One reading is one spot; start a new reading for another bar.</p>
       <label class="marks"><input type="checkbox" id="marksBox" checked> Show bar widths: blue = new bar, red = measured</label>
     </div>
   </section>
@@ -208,13 +220,17 @@
       <button class="btn sm primary" id="csvBtn">⬇ Export CSV</button>
       <button class="btn sm" id="clearBtn">Clear all</button>
     </div>
+    <div class="sync" id="syncBar"><span class="msg" id="syncMsg"></span>
+      <button class="btn sm" id="syncBtn" hidden>⟳ Sync now</button>
+      <button class="btn sm primary" id="signInBtn" hidden>Sign in to Dropbox</button>
+      <button class="btn sm ghost" id="signOutBtn" hidden>Sign out</button></div>
     <div id="saved"></div>
   </section>
 
   <p class="foot">Width loss = 1 − (bar width ÷ bar pitch) ÷ 0.4686, the width-to-pitch ratio of new tribar measured at C44,
     reported 1:1 as cross-section loss. The result is the worst spot you tap: the median width over one bar-spacing of
-    length there (about ±9 points; the whole bar's median, shown alongside, is about ±5). The window percentages show
-    the typical loss around it for comparison.</p>
+    length there, averaged over the photos of that spot (one photo is about ±9 points; the whole bar's median, shown
+    alongside, is about ±5). The window percentages show the typical loss around it for comparison.</p>
 </main>
 
 <div class="cam" id="cam" hidden>
@@ -222,6 +238,7 @@
     <video id="camVideo" playsinline muted autoplay></video>
     <canvas id="camLevel"></canvas>
     <div class="camMsg" id="camMsg"><b>Starting the camera…</b></div>
+    <div class="camRes" id="camRes" hidden></div>
   </div>
   <div class="camBar">
     <button class="btn camBtn" id="camClose">✕ Close</button>
@@ -234,6 +251,7 @@
 <input type="file" id="pickInput" accept="image/*" multiple hidden>
 
 <script src="./tribar.js"></script>
+<script src="./sync.js"></script>
 <script>
 "use strict";
 
@@ -283,6 +301,7 @@ function restore(){
     const d = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
     if (d){ Object.assign(STATE.loc, d.loc||{}); STATE.readings = d.readings||[]; if (d.marks===false) STATE.marks=false; }
     delete STATE.loc.side;    // the old Front/Back field, replaced by the crate count
+    for (const r of STATE.readings) if (!r.files){ r.files = []; r.synced = false; }   // saved before the Dropbox backup: back up the numbers
   }catch(e){/* start fresh */}
 }
 
@@ -355,13 +374,14 @@ async function decodePhoto(file){
   ctx.drawImage(img, 0, 0, w, h);
   const gray = Tribar.grayFromRGBA(ctx.getImageData(0, 0, w, h).data, w, h);
   cv.width = cv.height = 0;
-  return {img, w, h, gray, fullSize: s < 1 ? [W, H] : null};
+  return {img, w, h, gray, fullSize: s < 1 ? [W, H] : null, srcSize: [W, H]};
 }
 
 let queue = Promise.resolve();
 function addFiles(files, extra = {}){
   for (const file of files){
-    const ph = {id:uid(), name:file.name || "Photo", status:"queued", msg:"Waiting…", progress:0, pick:null, file, tilt:extra.tilt || null};
+    const ph = {id:uid(), name:file.name || "Photo", status:"queued", msg:"Waiting…", progress:0, pick:null, file,
+                tilt:extra.tilt || null, source:extra.source || "file"};
     STATE.photos.push(ph);
     queue = queue.then(() => processPhoto(ph));
   }
@@ -372,7 +392,7 @@ async function processPhoto(ph){
   ph.status = "measuring"; ph.msg = "Reading photo"; renderPhotos();
   try{
     const d = await decodePhoto(ph.file);
-    Object.assign(ph, {img:d.img, w:d.w, h:d.h, fullSize:d.fullSize});
+    Object.assign(ph, {img:d.img, w:d.w, h:d.h, fullSize:d.fullSize, srcSize:d.srcSize});
     const t0 = performance.now();
     ph.result = await measure(d.gray, d.w, d.h, (p, msg) => { ph.progress = p; ph.msg = msg; showProgress(ph); });
     ph.secs = (performance.now() - t0) / 1000;
@@ -382,6 +402,7 @@ async function processPhoto(ph){
     if (ph.img && ph.img.close) ph.img.close();
     ph.img = null;
   }
+  ph.original = ph.status === "done" ? ph.file : null;   // kept to back up with the reading
   ph.file = null;
   renderPhotos(); renderResult();
 }
@@ -435,40 +456,55 @@ function drawPhoto(ph){
 // red ends is the width that has been lost. The tapped worst bar is drawn
 // heavier over a yellow strip.
 function drawOverlay(ph){
-  const r = ph.result, ctx = ph.widths.getContext("2d"), s = ph.scale, half = Tribar.BASELINE_RATIO / 2;
+  const r = ph.result, ctx = ph.widths.getContext("2d");
   ctx.clearRect(0, 0, ph.widths.width, ph.widths.height);
+  paintWidths(ctx, ph, ph.scale, STATE.marks);
+  r.windows.forEach((w, i) => {
+    const box = ph.wins[i], lbl = box.firstChild, look = windowLook(w);
+    lbl.textContent = look.text;
+    box.className = "win" + (w.ok ? "" : " dim");
+    box.style.borderColor = lbl.style.background = look.color;
+  });
+  const p = ph.pick;
+  ph.pickLbl.hidden = !p;
+  if (!p) return;
+  const at = pickLabelAt(ph);
+  Object.assign(ph.pickLbl.style, {left:(100 * at.x / r.width) + "%", top:(100 * at.y / r.height) + "%",
+    transform:at.right ? "translate(0, -50%)" : "translate(-100%, -50%)"});
+  ph.pickLbl.textContent = "Worst spot " + pct(p.loss);
+}
+const windowLook = w => {
+  if (!w.ok) return {text:shortWhy(w.why), color:"#9aa5b1"};
+  const loss = 1 - w.ratio / Tribar.BASELINE_RATIO;
+  return {text:pct(loss), color:BAND_COLORS[Tribar.grade(loss)]};
+};
+// where the tapped spot's label goes: beside the spot, on whichever side has room
+function pickLabelAt(ph){
+  const p = ph.pick, mid = p.spot[p.spot.length >> 1], right = mid[1] / ph.result.width < 0.7, off = (Tribar.BASELINE_RATIO / 2 + 0.4) * mid[3];
+  return {x:mid[1] + (right ? off : -off), y:mid[0], right};
+}
+// Each measured bar gets two lines on its centreline: the width a new bar
+// would have at that spot (baseline ratio x the local bar spacing) in blue,
+// and the width measured in the photo in red on top. Blue showing past the
+// red ends is the width that has been lost. The tapped worst bar is drawn
+// heavier over a yellow strip. `s` = canvas pixels per measured pixel.
+function paintWidths(ctx, ph, s, marks){
+  const r = ph.result, half = Tribar.BASELINE_RATIO / 2;
   const lines = (marks, halfWidth, style, width) => {
     ctx.strokeStyle = style; ctx.lineWidth = width; ctx.beginPath();
     for (const m of marks){ const hw = halfWidth(m); ctx.moveTo((m[1] - hw) * s, m[0] * s); ctx.lineTo((m[1] + hw) * s, m[0] * s); }
     ctx.stroke();
   };
-  r.windows.forEach((w, i) => {
-    const box = ph.wins[i], lbl = box.firstChild;
-    if (STATE.marks && w.marks){
-      lines(w.marks, m => half * m[3], "rgba(0,200,255,.8)", Math.max(2, 3 * s));
-      lines(w.marks, m => m[2] / 2, "rgba(255,45,45,.95)", Math.max(1, 1.6 * s));
-    }
-    let color = "#9aa5b1";
-    if (!w.ok) lbl.textContent = shortWhy(w.why);
-    else {
-      const loss = 1 - w.ratio / Tribar.BASELINE_RATIO;
-      color = BAND_COLORS[Tribar.grade(loss)]; lbl.textContent = pct(loss);
-    }
-    box.className = "win" + (w.ok ? "" : " dim");
-    box.style.borderColor = lbl.style.background = color;
-  });
+  if (marks) for (const w of r.windows) if (w.marks){
+    lines(w.marks, m => half * m[3], "rgba(0,200,255,.8)", Math.max(2, 3 * s));
+    lines(w.marks, m => m[2] / 2, "rgba(255,45,45,.95)", Math.max(1, 1.6 * s));
+  }
   const p = ph.pick;
-  ph.pickLbl.hidden = !p;
   if (!p) return;
   lines(p.bar.marks, m => (half + 0.3) * m[3], "rgba(255,212,0,.25)", Math.max(3, 6 * s));   // the rest of the bar
   lines(p.spot, m => (half + 0.3) * m[3], "rgba(255,212,0,.7)", Math.max(3, 6 * s));        // the tapped spot
   lines(p.spot, m => half * m[3], "rgba(0,200,255,1)", Math.max(2, 3 * s));
   lines(p.spot, m => m[2] / 2, "rgba(255,45,45,1)", Math.max(2, 2 * s));
-  // label beside the spot, on whichever side has room
-  const mid = p.spot[p.spot.length >> 1], right = mid[1] / r.width < 0.7, off = (half + 0.4) * mid[3];
-  Object.assign(ph.pickLbl.style, {left:(100 * (mid[1] + (right ? off : -off)) / r.width) + "%",
-    top:(100 * mid[0] / r.height) + "%", transform:right ? "translate(0, -50%)" : "translate(-100%, -50%)"});
-  ph.pickLbl.textContent = "Worst spot " + pct(p.loss);
 }
 
 // Every width reading that can be tapped: [y, centre x, width, pitch]. Only
@@ -506,12 +542,40 @@ function photoLine(ph){
   const t = tiltOf(ph);
   if (t) bits.push("tilted " + Math.round(t.across) + "° across the bars, " + Math.round(t.along) + "° along them (" +
                    (t.source === "sensor" ? "tilt sensor" : "estimated from the photo") + ")");
-  if (ph.fullSize) bits.push("measured at " + (ph.w * ph.h / 1e6).toFixed(1) + " of " + (ph.fullSize[0] * ph.fullSize[1] / 1e6).toFixed(1) + " MP");
+  const px = pitchPx(ph);
+  bits.push((ph.srcSize ? ph.srcSize[0] + "×" + ph.srcSize[1] + " (" + (ph.srcSize[0] * ph.srcSize[1] / 1e6).toFixed(1) + " MP" +
+             (ph.fullSize ? ", measured at " + (ph.w * ph.h / 1e6).toFixed(1) + " MP" : "") + ")" : "") +
+            (px ? ", bars " + Math.round(px) + " px apart" : ""));
   bits.push(ph.secs.toFixed(1) + " s");
   ph.lineEl.textContent = bits.join(" · ");
-  const warn = tiltWarning(t);
-  ph.tiltEl.hidden = !warn;
-  if (warn){ ph.tiltEl.className = "ph-line " + (warn.bad ? "badline" : "warnline"); ph.tiltEl.textContent = warn.text; }
+  for (const [elx, warn] of [[ph.tiltEl, tiltWarning(t)], [ph.resEl, resWarning(ph)]]){
+    elx.hidden = !warn;
+    if (warn){ elx.className = "ph-line " + (warn.bad ? "badline" : "warnline"); elx.textContent = warn.text; }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Resolution. What matters is how many pixels apart the bars are in the
+ *  photo, not the megapixels. On the five C44 new-bar photos, scaled down
+ *  step by step, readings held within about a point down to bars ~30 px
+ *  apart (about 1.2 MP at the C44 framing) and began to drift by 2 to 4
+ *  points at 21 to 28 px. Real low-resolution camera frames are softer
+ *  than a scaled-down photo, and corroded edges are rougher, so the limits
+ *  are set with some margin.
+ * ------------------------------------------------------------------ */
+const PITCH_PX = {warn:40, bad:28};
+const medianOf = a => { const s = a.filter(v => v > 0).sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null; };
+function pitchPx(ph){
+  if (!ph.result) return null;
+  if (ph.pick) return medianOf(ph.pick.spot.map(m => m[3]));
+  return medianOf(ph.result.windows.map(w => w.pitch || 0));
+}
+function resWarning(ph){
+  const px = pitchPx(ph), cam = ph.source === "camera";
+  if (!px || px >= PITCH_PX.warn) return null;
+  const fix = cam ? "Move closer, or use the Camera app button for a full-resolution photo." : "Move closer so fewer bars fill the photo.";
+  return {bad: px < PITCH_PX.bad, text:"The bars are only " + Math.round(px) + " px apart in this photo" +
+    (px < PITCH_PX.bad ? ", too few to measure reliably. " : "; readings may be a point or two off. ") + fix};
 }
 
 function showProgress(ph){
@@ -530,6 +594,7 @@ function renderPhotos(){
       card.appendChild(ph.stage);
       card.appendChild(ph.lineEl = el("div", {class:"ph-line"}));
       card.appendChild(ph.tiltEl = el("div", {class:"ph-line", hidden:""}));
+      card.appendChild(ph.resEl = el("div", {class:"ph-line", hidden:""}));
       photoLine(ph);
     } else if (ph.status === "error"){
       card.appendChild(el("div", {class:"ph-line err", text:ph.msg}));
@@ -544,19 +609,31 @@ function renderPhotos(){
 }
 
 /* ------------------------------------------------------------------ *
- *  Result for the current reading: the worst bar tapped in any of its
- *  photos, with the typical loss across all of them for comparison
+ *  Result for the current reading: the same worst spot tapped in each of
+ *  its photos, averaged. One tapped spot is about ±9 points on new bars;
+ *  averaging photos of the same spot, each framed a little differently,
+ *  averages out what changes from photo to photo (glare, focus, which
+ *  pixels the edges fall on). It can't average out what stays the same
+ *  (e.g. the bar's own texture at that spot), so it helps, but by less
+ *  than the square root of the number of photos would suggest.
  * ------------------------------------------------------------------ */
+const SPREAD_WARN = 0.10;    // photos of one spot reading further apart than this probably show different spots
 function currentSummary(){
-  const done = STATE.photos.filter(p => p.status === "done");
-  const worst = done.filter(p => p.pick).sort((a, b) => b.pick.loss - a.pick.loss)[0] || null;   // worst spot tapped
-  return {done, worst, typical: Tribar.summarize(done.flatMap(p => p.result.windows)),
+  const done = STATE.photos.filter(p => p.status === "done"), picked = done.filter(p => p.pick);
+  const mean = f => picked.reduce((t, p) => t + f(p.pick), 0) / picked.length;
+  const losses = picked.map(p => p.pick.loss);
+  const avg = picked.length ? {
+    loss: mean(q => q.loss), ratio: mean(q => q.ratio), bar: mean(q => q.bar.loss),
+    n: picked.reduce((t, p) => t + p.pick.n, 0), count: picked.length,
+    spread: Math.max(...losses) - Math.min(...losses),
+  } : null;
+  return {done, picked, avg, typical: Tribar.summarize(done.flatMap(p => p.result.windows)),
           total: done.reduce((n, p) => n + p.result.windows.length, 0)};
 }
 
 function renderResult(){
   const card = $("#resultCard"); card.innerHTML = "";
-  const {done, worst, typical, total} = currentSummary();
+  const {done, picked, avg, typical, total} = currentSummary();
   const busy = STATE.photos.some(p => p.status === "queued" || p.status === "measuring");
   const stat = (v, label) => el("div", {class:"stat"}, [el("b", {text:v}), el("span", {text:label})]);
   card.appendChild(el("div", {class:"hdr"}, [el("h2", {text:"Result"})]));
@@ -567,33 +644,46 @@ function renderResult(){
     return;
   }
   const photos = done.length > 1 ? " across the photos" : "";
-  if (!worst){
+  if (!avg){
     card.appendChild(el("p", {class:"empty", text: busy ? "Measuring…" : "Tap the worst spot on the worst bar to get the result."}));
     card.appendChild(el("div", {class:"stats"}, [stat(pct(typical.typical), "Typical width loss" + photos),
                                                  stat(typical.n + " of " + total, "Windows measured")]));
     return;
   }
-  const w = worst.pick, band = Tribar.grade(w.loss);
+  const band = Tribar.grade(avg.loss);
   card.appendChild(el("div", {class:"top"}, [
     el("div", {class:"bandBig", text:BAND_TEXT[band], style:"background:" + BAND_COLORS[band]}),
-    el("div", {class:"bandCap"}, [el("b", {text:"Cross-section loss"}), el("br"), "at the worst spot you tapped"]),
+    el("div", {class:"bandCap"}, [el("b", {text:"Cross-section loss"}), el("br"),
+      avg.count > 1 ? "at the worst spot, averaged over " + avg.count + " photos" : "at the worst spot you tapped, from one photo"]),
   ]));
-  if (w.loss < WIDER_THAN_NEW) card.appendChild(el("p", {class:"warn", text:widerWarning(w.loss)}));
-  const wt = tiltOf(worst);
-  if (wt && wt.across > TILT.acrossBad) card.appendChild(el("p", {class:"warn", text:"The photo with the worst spot was tilted " +
-    Math.round(wt.across) + "° across the bars. Photos tilted 20–35° that way read one to two bands low in testing. " +
+  if (avg.count < 3 && !busy) card.appendChild(el("p", {class:"spots", text:(avg.count === 1 ? "One photo is about ±9 points. " : "") +
+    "Take " + (3 - avg.count) + " more photo" + (avg.count === 2 ? "" : "s") + " of this same spot and tap it, for a tighter reading."}));
+  if (done.length > picked.length && !busy) card.appendChild(el("p", {class:"spots", text:(done.length - picked.length) +
+    " photo" + (done.length - picked.length === 1 ? " has" : "s have") + " no spot tapped and " + (done.length - picked.length === 1 ? "isn't" : "aren't") +
+    " in the average. Tap the same spot in it, or remove it."}));
+  if (avg.count > 1 && avg.spread > SPREAD_WARN) card.appendChild(el("p", {class:"warn", text:"The photos read " + pct(avg.spread) +
+    " apart at the tapped spot. That's more than photos of one spot should differ, so check that every photo has the same spot tapped, " +
+    "or retake the one that's off."}));
+  const wide = picked.find(p => p.pick.loss < WIDER_THAN_NEW);
+  if (wide) card.appendChild(el("p", {class:"warn", text:(picked.length > 1 ? wide.name + ": " : "") + widerWarning(wide.pick.loss)}));
+  const tilted = picked.find(p => { const t = tiltOf(p); return t && t.across > TILT.acrossBad; });
+  if (tilted) card.appendChild(el("p", {class:"warn", text:(picked.length > 1 ? tilted.name + " was" : "The photo was") + " tilted " +
+    Math.round(tiltOf(tilted).across) + "° across the bars. Photos tilted 20–35° that way read one to two bands low in testing. " +
     "Retake it level side to side; tipping forward along the bars is fine."}));
+  const lowRes = picked.find(p => { const w = resWarning(p); return w && w.bad; });
+  if (lowRes) card.appendChild(el("p", {class:"warn", text:(picked.length > 1 ? lowRes.name + ": " : "") + resWarning(lowRes).text}));
   card.appendChild(el("div", {class:"stats"}, [
-    stat(pct(w.loss), "Worst spot width loss" + (done.length > 1 ? " (" + worst.name + ")" : "")),
-    stat(pct(w.bar.loss), "That bar overall (median along it)"),
-    stat(String(w.n), "Readings at that spot"),
+    stat(pct(avg.loss), avg.count > 1 ? "Worst spot width loss, average of " + avg.count + " photos" : "Worst spot width loss"),
+    avg.count > 1 ? stat(picked.map(p => pct(p.pick.loss)).join(", "), "Each photo (spread " + pct(avg.spread) + ")") : null,
+    stat(pct(avg.bar), "That bar overall (median along it" + (avg.count > 1 ? ", averaged" : "") + ")"),
+    stat(String(avg.n), "Readings at that spot"),
     stat(pct(typical.typical), "Typical width loss" + photos + ", for comparison"),
     stat(typical.n + " of " + total, "Windows measured"),
   ]));
   card.appendChild(el("div", {class:"hdr", style:"margin:0"}, [
     el("span", {class:"tip", style:"margin:0;flex:1", text:"Saves under: " + [STATE.loc.site, locLabel(STATE.loc)].filter(Boolean).join(" · ")}),
     el("button", {class:"btn", text:"Discard", onclick:discardReading}),
-    el("button", {class:"btn primary", text:"✓ Save reading", disabled: busy ? "" : null, onclick:saveReading}),
+    el("button", {class:"btn primary", id:"saveBtn", text:"✓ Save reading", disabled: busy ? "" : null, onclick:saveReading}),
   ]));
 }
 
@@ -602,24 +692,99 @@ function discardReading(){
   STATE.photos = []; renderPhotos(); renderResult();
 }
 
-function saveReading(){
-  const {done, worst, typical, total} = currentSummary();
-  if (!worst) return;
-  const w = worst.pick;
-  STATE.readings.unshift({
-    id:uid(), savedAt:new Date().toISOString(), ...STATE.loc,
-    band:Tribar.grade(w.loss), worstSpot:w.loss, worstSpotRatio:w.ratio, worstSpotN:w.n, worstBar:w.bar.loss, worstSpotPhoto:worst.name,
-    typical:typical.typical, used:typical.n, total, baseline:Tribar.BASELINE_RATIO,
-    photos: done.map(p => ({name:p.name, angle:p.result.angle, turned:p.result.turned, tilt:tiltOf(p),
-      // where the tapped spot is, in the straightened photo's pixels
-      pick: p.pick ? {loss:p.pick.loss, n:p.pick.n, bar:p.pick.bar.loss, x:Math.round(p.pick.spot[p.pick.spot.length >> 1][1]),
-                      y0:Math.round(p.pick.spot[0][0]), y1:Math.round(p.pick.spot[p.pick.spot.length - 1][0])} : null,
-      windows: p.result.windows.map(v => ({cell:v.cell, ok:v.ok, why:v.why || null,
-        ratio: v.ratio ?? null, ratio_worst: v.ratio_worst ?? null, n: v.n ?? null}))})),
+let saving = false;
+async function saveReading(){
+  const {done, picked, avg, typical, total} = currentSummary();
+  if (!avg || saving) return;
+  saving = true; const btn = $("#saveBtn"); if (btn){ btn.disabled = true; btn.textContent = "Saving…"; }
+  try{
+    const id = uid(), worst = picked.slice().sort((a, b) => b.pick.loss - a.pick.loss)[0];
+    const r = {
+      id, savedAt:new Date().toISOString(), ...STATE.loc,
+      band:Tribar.grade(avg.loss), worstSpot:avg.loss, worstSpotRatio:avg.ratio, worstSpotN:avg.n, worstBar:avg.bar,
+      spotsAveraged:avg.count, spotLosses:picked.map(p => p.pick.loss), spotSpread:avg.spread,
+      worstSpotPhoto:worst.name,
+      typical:typical.typical, used:typical.n, total, baseline:Tribar.BASELINE_RATIO,
+      photos: done.map(p => ({name:p.name, angle:p.result.angle, turned:p.result.turned, tilt:tiltOf(p),
+        size:p.srcSize || null, measuredSize:[p.w, p.h], pitchPx:pitchPx(p), source:p.source,
+        // where the tapped spot is, in the straightened photo's pixels
+        pick: p.pick ? {loss:p.pick.loss, n:p.pick.n, bar:p.pick.bar.loss, x:Math.round(p.pick.spot[p.pick.spot.length >> 1][1]),
+                        y0:Math.round(p.pick.spot[0][0]), y1:Math.round(p.pick.spot[p.pick.spot.length - 1][0])} : null,
+        windows: p.result.windows.map(v => ({cell:v.cell, ok:v.ok, why:v.why || null,
+          ratio: v.ratio ?? null, ratio_worst: v.ratio_worst ?? null, n: v.n ?? null}))})),
+      files: [], synced: false,
+    };
+    // the marked-up photo of every photo with a tapped spot, and every original, kept on the device until backed up
+    let k = 0;
+    for (const p of done){
+      k++;
+      try{
+        if (p.pick){
+          const blob = await markedImage(p, r, k, done.length);
+          if (blob){ await TribarSync.IDB.put(id + "/m" + k, blob); r.files.push({key:id + "/m" + k, kind:"marked", photo:p.name, suffix:"marked " + k + ".jpg"}); }
+        }
+        if (p.original){
+          await TribarSync.IDB.put(id + "/o" + k, p.original);
+          r.files.push({key:id + "/o" + k, kind:"original", photo:p.name, suffix:"photo " + k + extOf(p.original)});
+        }
+      }catch(e){ toast("Couldn’t keep a photo on this device: " + (e.message || e)); }
+    }
+    STATE.readings.unshift(r);
+    persist();
+    STATE.photos = []; renderPhotos(); renderResult(); renderSaved();
+    toast("Saved " + locLabel(r) + ": " + BAND_TEXT[r.band]);
+    sync();
+  } finally { saving = false; }
+}
+const extOf = f => { const m = /\.(jpe?g|png|heic|heif|webp)$/i.exec(f.name || ""); return m ? "." + m[1].toLowerCase() : (f.type === "image/png" ? ".png" : ".jpg"); };
+
+// The straightened photo with its windows, bar widths and tapped spot drawn
+// on, and a caption burned in underneath, for the letter.
+async function markedImage(ph, r, k, of){
+  const base = ph.base, W = base.width, H = base.height, s = ph.scale, res = ph.result;
+  const fs = Math.max(14, Math.round(W / 62)), pad = Math.round(fs * 0.7), lineH = Math.round(fs * 1.4);
+  const lines = [
+    [r.site, locLabel(r)].filter(Boolean).join(" · "),
+    "Worst spot " + pct(ph.pick.loss) + " width loss in this photo" +
+      (r.spotsAveraged > 1 ? "; " + pct(r.worstSpot) + " averaged over " + r.spotsAveraged + " photos" : "") +
+      " → " + BAND_TEXT[r.band] + " cross-section loss · that bar overall " + pct(ph.pick.bar.loss),
+    [new Date(r.savedAt).toLocaleString([], {year:"numeric", month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}),
+     "photo " + k + " of " + of + " (" + ph.name + ")",
+     tiltOf(ph) ? "tilt " + Math.round(tiltOf(ph).across) + "° across / " + Math.round(tiltOf(ph).along) + "° along" : null,
+     "blue = new bar width, red = measured", "Johnson Engineering Group"].filter(Boolean).join(" · "),
+  ];
+  const cv = el("canvas"); cv.width = W; cv.height = H + pad * 2 + lineH * lines.length;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(base, 0, 0);
+  paintWidths(ctx, ph, s, true);
+  // the windows and their figures
+  ctx.font = "700 " + Math.round(fs * 0.85) + "px system-ui, -apple-system, Segoe UI, Arial, sans-serif"; ctx.textBaseline = "top";
+  for (const w of res.windows){
+    const [x0, x1, y0, y1] = w.box.map(v => v * s), look = windowLook(w);
+    if (!w.ok){ ctx.fillStyle = "rgba(15,20,25,.45)"; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); }
+    ctx.strokeStyle = look.color; ctx.lineWidth = 2; ctx.strokeRect(x0 + 1, y0 + 1, x1 - x0 - 2, y1 - y0 - 2);
+    const tw = ctx.measureText(look.text).width;
+    ctx.fillStyle = look.color; ctx.fillRect(x0 + 4, y0 + 4, tw + 10, fs * 1.15);
+    ctx.fillStyle = "#fff"; ctx.fillText(look.text, x0 + 9, y0 + 4 + fs * 0.12);
+  }
+  // the tapped spot's label
+  const at = pickLabelAt(ph), txt = "Worst spot " + pct(ph.pick.loss);
+  ctx.font = "800 " + fs + "px system-ui, -apple-system, Segoe UI, Arial, sans-serif"; ctx.textBaseline = "middle";
+  const tw = ctx.measureText(txt).width, bx = at.right ? at.x * s : at.x * s - tw - 14, by = at.y * s;
+  ctx.fillStyle = "#111"; ctx.fillRect(bx, by - fs * 0.75, tw + 14, fs * 1.5);
+  ctx.strokeStyle = "#ffd400"; ctx.lineWidth = 2; ctx.strokeRect(bx, by - fs * 0.75, tw + 14, fs * 1.5);
+  ctx.fillStyle = "#ffd400"; ctx.fillText(txt, bx + 7, by);
+  // caption
+  ctx.textBaseline = "top";
+  lines.forEach((t, i) => {
+    ctx.font = (i === 1 ? "700 " : i === 0 ? "700 " : "400 ") + (i === 2 ? Math.round(fs * 0.85) : fs) + "px system-ui, -apple-system, Segoe UI, Arial, sans-serif";
+    ctx.fillStyle = i === 2 ? "#4a5560" : "#1f2933";
+    ctx.fillText(t, pad, H + pad + i * lineH, W - 2 * pad);
   });
-  persist();
-  STATE.photos = []; renderPhotos(); renderResult(); renderSaved();
-  toast("Saved " + locLabel(STATE.readings[0]) + ": " + BAND_TEXT[STATE.readings[0].band]);
+  const blob = await new Promise(res2 => cv.toBlob(res2, "image/jpeg", 0.88));
+  cv.width = cv.height = 0;
+  return blob;
 }
 
 /* ------------------------------------------------------------------ *
@@ -629,44 +794,121 @@ function renderSaved(){
   const box = $("#saved"); box.innerHTML = "";
   $("#savedCount").textContent = STATE.readings.length ? "(" + STATE.readings.length + ")" : "";
   $("#csvBtn").disabled = $("#clearBtn").disabled = !STATE.readings.length;
+  renderSync();
   if (!STATE.readings.length){ box.appendChild(el("p", {class:"empty", text:"Nothing saved yet."})); return; }
   for (const r of STATE.readings){
+    const marked = (r.files || []).filter(f => f.kind === "marked");
     box.appendChild(el("div", {class:"reading"}, [
       el("span", {class:"chip", text:BAND_TEXT[r.band], style:"background:" + BAND_COLORS[r.band]}),
       el("div", {class:"what"}, [
         el("div", {class:"where", text:locLabel(r)}),
-        el("div", {class:"meta", text:[r.site, r.worstSpot != null ? "worst spot " + pct(r.worstSpot) : null,
+        el("div", {class:"meta", text:[r.site, r.worstSpot != null ? "worst spot " + pct(r.worstSpot) +
+            (r.spotsAveraged > 1 ? " (avg of " + r.spotsAveraged + ")" : "") : null,
           r.worstBar != null ? "that bar " + pct(r.worstBar) : null,
           r.typical != null ? "typical " + pct(r.typical) : null,
           r.photos.length + (r.photos.length === 1 ? " photo" : " photos"),
           new Date(r.savedAt).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}),
           r.note].filter(Boolean).join(" · ")}),
       ]),
+      r.files ? el("span", {class:"cloud" + (r.synced ? "" : " wait"), title:r.synced ? "Backed up to Dropbox" : "Not backed up yet",
+                            text:r.synced ? "☁ Backed up" : "⏳ Not backed up"}) : null,
+      marked.length ? el("button", {class:"btn sm", title:"Share the marked-up photo", text:"🖼 Photo", onclick:() => shareMarked(r)}) : null,
       el("button", {class:"btn sm ghost", title:"Delete reading", text:"🗑", onclick:() => {
-        if (!confirm("Delete the reading for " + locLabel(r) + "?")) return;
+        if (!confirm("Delete the reading for " + locLabel(r) + "?" + (r.files && !r.synced ? " It hasn’t been backed up to Dropbox." : ""))) return;
+        for (const f of r.files || []) TribarSync.IDB.del(f.key).catch(() => {});
         STATE.readings = STATE.readings.filter(x => x !== r); persist(); renderSaved();
       }}),
     ]));
   }
 }
+async function shareMarked(r){
+  const files = [];
+  for (const f of (r.files || []).filter(f => f.kind === "marked")){
+    const blob = await TribarSync.IDB.get(f.key).catch(() => null);
+    if (blob) files.push(new File([blob], [r.site, locLabel(r), f.suffix].filter(Boolean).join(" - ").replace(/[\\/:*?"<>|]+/g, "-"), {type:"image/jpeg"}));
+  }
+  if (!files.length) return toast("The marked-up photo isn’t on this device any more.");
+  try{
+    if (navigator.canShare && navigator.canShare({files})){ await navigator.share({files, title:locLabel(r)}); return; }
+  }catch(e){ if (e && e.name === "AbortError") return; }
+  for (const f of files) downloadBlob(f.name, f);
+}
 
 const csvCell = v => { const s = v == null ? "" : String(v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
 const pct1 = v => v == null ? "" : (100 * v).toFixed(1);
-function exportCSV(){
+// readings oldest first
+function csvFor(readings){
   const head = ["Site","Barn","Room","Row","Crates from front of room","Note","Cross-section loss band","Worst spot width loss %",
+                "Photos averaged","Each photo's worst spot %","Spread between photos %",
                 "Readings at worst spot","Worst bar overall width loss %","Worst spot photo","Typical width loss %",
-                "Windows measured","Windows total","Photos","Baseline ratio","Saved","Worst spot photo tilt across bars (deg)"];
-  const worstTilt = r => { const p = r.photos.find(q => q.pick && q.name === r.worstSpotPhoto) || r.photos.find(q => q.pick);
-                           return p && p.tilt ? Math.round(p.tilt.across) : ""; };
-  const rows = STATE.readings.slice().reverse().map(r => [r.site, r.barn, r.room, r.row, r.crate || r.side, r.note, BAND_TEXT[r.band],
-    pct1(r.worstSpot), r.worstSpotN, pct1(r.worstBar), r.worstSpotPhoto, pct1(r.typical), r.used, r.total,
-    r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString(), worstTilt(r)]);
-  const csv = [head, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
+                "Windows measured","Windows total","Photos","Baseline ratio","Saved","Worst spot photo tilt across bars (deg)",
+                "Bar spacing in photo (px)"];
+  const worstPhoto = r => r.photos.find(q => q.pick && q.name === r.worstSpotPhoto) || r.photos.find(q => q.pick) || {};
+  const rows = readings.map(r => { const w = worstPhoto(r); return [r.site, r.barn, r.room, r.row, r.crate || r.side, r.note, BAND_TEXT[r.band],
+    pct1(r.worstSpot), r.spotsAveraged || 1, (r.spotLosses || [r.worstSpot]).map(pct1).join("; "), pct1(r.spotSpread),
+    r.worstSpotN, pct1(r.worstBar), r.worstSpotPhoto, pct1(r.typical), r.used, r.total,
+    r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString(),
+    w.tilt ? Math.round(w.tilt.across) : "", w.pitchPx ? Math.round(w.pitchPx) : ""]; });
+  return "﻿" + [head, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
+}
+function exportCSV(){
   const sites = [...new Set(STATE.readings.map(r => r.site).filter(Boolean))];
   const fn = "Tribar readings" + (sites.length === 1 ? " - " + sites[0].replace(/[\\/:*?"<>|]+/g, "-") : "") +
              " - " + new Date().toISOString().slice(0, 10) + ".csv";
-  shareOrDownload(fn, new Blob(["﻿" + csv], {type:"text/csv"}), "text/csv");
+  shareOrDownload(fn, new Blob([csvFor(STATE.readings.slice().reverse())], {type:"text/csv"}), "text/csv");
 }
+
+/* ------------------------------------------------------------------ *
+ *  Dropbox backup (sync.js): readings save here first, then go up to
+ *  the team folder whenever there's signal
+ * ------------------------------------------------------------------ */
+const SYNC = {busy:false, error:null, last:null, note:""};
+const unsynced = () => STATE.readings.filter(r => r.files && !r.synced).length;
+// the location as it goes in a Dropbox file name: "Farrowing 2 Room 3 Row 2 Crate 5"
+const fileLabel = r => [r.barn, r.room && "Room " + r.room, r.row && "Row " + r.row, r.crate && "Crate " + r.crate].filter(Boolean).join(" ") || "No location";
+function renderSync(){
+  const signed = TribarSync.signedIn(), acct = TribarSync.account(), left = unsynced(), bar = $("#syncBar");
+  $("#signInBtn").hidden = signed; $("#signOutBtn").hidden = !signed;
+  $("#syncBtn").hidden = !signed || !left || SYNC.busy;
+  bar.classList.toggle("err", !!SYNC.error);
+  const m = $("#syncMsg"); m.innerHTML = "";
+  const parts = [];
+  if (!signed) parts.push(el("b", {text:"Not backed up. "}), "Readings are only on this device. Sign in to Dropbox to back them up to " +
+                          "the team folder (Tribar Readings) with their marked-up photos.");
+  else {
+    parts.push(el("b", {text:"Dropbox" + (acct && acct.name ? " (" + acct.name + ")" : "") + ": "}));
+    if (SYNC.busy) parts.push(SYNC.note || "Uploading…");
+    else if (SYNC.error) parts.push(SYNC.error + (left ? " " + left + " reading" + (left === 1 ? "" : "s") + " waiting." : ""));
+    else if (left) parts.push(left + " reading" + (left === 1 ? "" : "s") + " waiting to upload" +
+                              (navigator.onLine === false ? "; will upload when there's signal." : "."));
+    else parts.push("all readings backed up" + (SYNC.last ? " (" + SYNC.last.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) + ")" : "") + ".");
+  }
+  for (const p of parts) m.appendChild(typeof p === "string" ? document.createTextNode(p) : p);
+}
+async function sync(){
+  if (SYNC.busy){ SYNC.again = true; return; }          // saved while an upload was running: go again when it ends
+  if (!TribarSync.signedIn() || !unsynced()) { renderSync(); return; }
+  SYNC.busy = true; SYNC.error = null; SYNC.note = ""; renderSync();
+  try{
+    const res = await TribarSync.syncAll(STATE.readings, {label:fileLabel, csv:csvFor, persist,
+      progress:t => { SYNC.note = t; renderSync(); }});
+    if (res.error) SYNC.error = res.error.code === "offline" ? "No connection; will try again." : res.error.message;
+    else if (res.done) SYNC.last = new Date();
+  }catch(e){ SYNC.error = e.message || String(e); }
+  SYNC.busy = false;
+  renderSaved();
+  if (SYNC.again){ SYNC.again = false; if (!SYNC.error) sync(); }
+}
+function signIn(){
+  if (STATE.photos.length && !confirm("Signing in leaves the app for a moment and the photos for this reading will be lost. Sign in anyway?")) return;
+  TribarSync.signIn().catch(e => toast("Couldn’t start the Dropbox sign-in: " + e.message));
+}
+async function signOut(){
+  const left = unsynced();
+  if (!confirm("Sign out of Dropbox?" + (left ? " " + left + " reading" + (left === 1 ? " hasn’t" : "s haven’t") + " been backed up yet; they stay on this device." : ""))) return;
+  await TribarSync.signOut(); SYNC.error = null; renderSync();
+}
+
 function downloadBlob(filename, blob){
   const a=document.createElement("a"), url=URL.createObjectURL(blob);
   a.href=url; a.download=filename; document.body.appendChild(a); a.click();
@@ -731,21 +973,36 @@ async function openCamera(){
   // iPad and iPhone ask permission for the tilt sensor, and only from a tap
   if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function")
     DeviceOrientationEvent.requestPermission().catch(() => {});
-  Object.assign(CAM, {look:null, bars:null, sensor:false, msg:""});
+  Object.assign(CAM, {look:null, bars:null, sensor:false, msg:"", capture:null});
+  $("#camRes").hidden = true;
   $("#cam").hidden = false; $("#camShutter").disabled = true;
   setCamMsg("Starting the camera…", "", "");
   window.addEventListener("deviceorientation", onOrientation);
   try{
     CAM.stream = await navigator.mediaDevices.getUserMedia({audio:false,
       video:{facingMode:{ideal:"environment"}, width:{ideal:4096}, height:{ideal:3072}}});
+    // Where the browser can take a full-resolution still from the stream (Chrome on Android; not Safari), use it
+    try{ if (typeof ImageCapture === "function") CAM.capture = new ImageCapture(CAM.stream.getVideoTracks()[0]); }catch(e){ CAM.capture = null; }
     if ($("#cam").hidden){ stopStream(); return; }      // closed while starting
     const v = $("#camVideo"); v.srcObject = CAM.stream; await v.play();
     $("#camShutter").disabled = false;
+    showCamRes(v);
     CAM.timer = setInterval(() => updateBars(v), 300);
     CAM.raf = requestAnimationFrame(levelFrame);
   }catch(e){
     setCamMsg("Couldn’t start the camera", (e && e.message ? e.message + ". " : "") + "Tap Camera app to use the built-in camera app.", "bad");
   }
+}
+// The size of the frames the in-app camera takes. A browser camera can give
+// less than the Camera app's full resolution; the bar spacing check on each
+// photo says whether it was enough.
+function showCamRes(v){
+  const w = v.videoWidth, h = v.videoHeight, mp = w * h / 1e6, r = $("#camRes");
+  if (!w) return;
+  const still = CAM.capture ? " (full-resolution still)" : "";
+  r.hidden = false; r.className = "camRes" + (mp < 3 && !still ? " low" : "");
+  r.textContent = "Camera " + w + "×" + h + " · " + mp.toFixed(1) + " MP" + still +
+                  (mp < 3 && !still ? " · get close, or use Camera app" : "");
 }
 function stopStream(){ if (CAM.stream){ for (const t of CAM.stream.getTracks()) t.stop(); CAM.stream = null; } }
 function closeCamera(){
@@ -876,16 +1133,20 @@ async function takeCameraPhoto(){
   const v = $("#camVideo");
   if (!v.videoWidth) return;
   $("#camShutter").disabled = true;
-  const cv = document.createElement("canvas"); cv.width = v.videoWidth; cv.height = v.videoHeight;
-  cv.getContext("2d").drawImage(v, 0, 0);
   const p = CAM.sensor ? tiltParts() : null;
   const tilt = p ? {across:Math.abs(p.across), along:Math.abs(p.along), source:"sensor"} : null;
-  const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.92));
-  cv.width = cv.height = 0;
+  let blob = null;
+  if (CAM.capture){ try{ blob = await CAM.capture.takePhoto(); }catch(e){ blob = null; } }
+  if (!blob){       // a frame of the preview
+    const cv = document.createElement("canvas"); cv.width = v.videoWidth; cv.height = v.videoHeight;
+    cv.getContext("2d").drawImage(v, 0, 0);
+    blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.92));
+    cv.width = cv.height = 0;
+  }
   closeCamera();
   if (!blob) return toast("Couldn’t take the photo. Try again, or use Camera app.");
   const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, ".");
-  addFiles([new File([blob], "Photo " + stamp + ".jpg", {type:"image/jpeg"})], {tilt});
+  addFiles([new File([blob], "Photo " + stamp + ".jpg", {type:"image/jpeg"})], {tilt, source:"camera"});
 }
 
 /* ------------------------------------------------------------------ *
@@ -916,10 +1177,22 @@ function init(){
   });
   $("#csvBtn").addEventListener("click", exportCSV);
   $("#clearBtn").addEventListener("click", () => {
-    if (!confirm("Delete all " + STATE.readings.length + " saved readings? Export them first if you need them.")) return;
-    STATE.readings = []; persist(); renderSaved();
+    const left = unsynced();
+    if (!confirm("Delete all " + STATE.readings.length + " saved readings from this device?" +
+                 (left ? " " + left + " of them " + (left === 1 ? "hasn’t" : "haven’t") + " been backed up to Dropbox; export them first if you need them." :
+                         " They're backed up in Dropbox."))) return;
+    STATE.readings = []; persist(); TribarSync.IDB.clear().catch(() => {}); renderSaved();
   });
+  $("#signInBtn").addEventListener("click", signIn);
+  $("#signOutBtn").addEventListener("click", signOut);
+  $("#syncBtn").addEventListener("click", sync);
+  window.addEventListener("online", sync);
+  setInterval(() => { if (unsynced() && !SYNC.busy) sync(); }, 120000);
   renderPhotos(); renderResult(); renderSaved();
+  TribarSync.init().then(({error}) => {
+    if (error) toast("Dropbox: " + error);
+    renderSync(); sync();
+  });
 }
 function showSite(){
   $("#siteTag").style.display = STATE.loc.site ? "inline-flex" : "none";
