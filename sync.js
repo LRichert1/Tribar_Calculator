@@ -75,6 +75,9 @@ const IDB = {
   },
   del(key) { return this.run("readwrite", st => st.delete(key)); },
   clear() { return this.run("readwrite", st => st.clear()); },
+  // plain objects (the cached index of the team folder)
+  putObj(key, obj) { return this.run("readwrite", st => st.put(obj, key)); },
+  getObj(key) { return this.run("readonly", st => st.get(key)); },
 };
 
 /* ---------------- Dropbox sign-in: OAuth 2 code flow with PKCE (no secret anywhere in the page) ----------------
@@ -191,13 +194,14 @@ function createDropboxFiles(o) {
     base,
     ensureFolder,
     upload: (path, body) => call('up', 'files/upload', { path, mode: { '.tag': 'overwrite' }, autorename: false, mute: true }, body),
-    async list(path) {
-      let r; try { r = await call('rpc', 'files/list_folder', { path, recursive: false, limit: 2000 }); } catch (e) { if (e.code === 'missing') return []; throw e; }
+    async list(path, recursive) {
+      let r; try { r = await call('rpc', 'files/list_folder', { path, recursive: !!recursive, limit: 2000 }); } catch (e) { if (e.code === 'missing') return []; throw e; }
       let j = await r.json(), entries = j.entries || [];
       while (j.has_more) { r = await call('rpc', 'files/list_folder/continue', { cursor: j.cursor }); j = await r.json(); entries = entries.concat(j.entries || []); }
       return entries;
     },
     async download(path) { return (await call('down', 'files/download', { path })).text(); },
+    async downloadBlob(path) { return (await call('down', 'files/download', { path })).blob(); },
   };
 }
 
@@ -237,7 +241,14 @@ const siteFolder = r => BASE + "/" + (safe(r.site) || "No site");
 const stem = (r, label) => safe((r.savedAt || "").slice(0, 10) + " " + label + " " + r.id);
 const idOfJson = name => (/ ([a-z0-9]+)\.json$/i.exec(name) || [])[1];
 // What goes up as the reading's JSON: the reading without the device's own bookkeeping
-const record = r => { const x = Object.assign({}, r); delete x.synced; x.files = (r.files || []).map(f => { const g = Object.assign({}, f); delete g.key; return g; }); return x; };
+const record = r => {
+  const x = Object.assign({}, r); delete x.synced;
+  x.files = (r.files || []).map(f => { const g = Object.assign({}, f); delete g.key; return g; });
+  if (!x.by && acct && acct.name) x.by = acct.name;      // who saved it, for the dashboard (readings saved signed out)
+  return x;
+};
+const STATUS_FILE = "Site status.json";
+const siteKey = site => (safe(site) || "No site").toLowerCase();
 
 // Site folders whose CSV still has to be rebuilt; kept on the device so a rebuild that fails is retried next time.
 const pending = () => jget(CSV_PENDING, []);
@@ -278,6 +289,7 @@ async function doSync(readings, hooks) {
         hooks.persist();
       }
       markCsv(dir, r.site, true);
+      if (!r.by && acct && acct.name) r.by = acct.name;     // saved signed out: say who backed it up
       await client.upload(dir + "/" + name + ".json", new Blob([JSON.stringify(record(r), null, 1)], {type: "application/json"}));
       r.synced = new Date().toISOString(); hooks.persist(); done++;
     }
@@ -297,7 +309,7 @@ async function doSync(readings, hooks) {
 async function rebuildCsv(dir, site, local, hooks) {
   const mine = new Map(local.filter(r => r.synced).map(r => [r.id, r]));
   const rows = [];
-  for (const e of (await client.list(dir)).filter(x => x[".tag"] === "file" && /\.json$/i.test(x.name))) {
+  for (const e of (await client.list(dir)).filter(x => x[".tag"] === "file" && /\.json$/i.test(x.name) && x.name !== STATUS_FILE)) {
     const own = mine.get(idOfJson(e.name));
     if (own) { rows.push(record(own)); continue; }
     let j = null; try { j = JSON.parse(await client.download(e.path_lower)); } catch (err) { if (err instanceof SyncError) throw err; /* unreadable JSON: skip it */ }
@@ -307,6 +319,79 @@ async function rebuildCsv(dir, site, local, hooks) {
   await client.upload(dir + "/Tribar readings - " + (safe(site) || "No site") + ".csv", new Blob([hooks.csv(rows)], {type: "text/csv"}));
 }
 
+/* ---------------- the team folder, for the dashboard ----------------
+   One recursive listing of the base folder, then only the reading JSONs that are new or changed since the last
+   look are downloaded (a reading this iPad uploaded is taken from the device). Kept on the device, so the dashboard
+   still shows the team's readings with no signal, as of the last refresh.
+   index = {at, sites: {key: {name, dir, status, statusAt, statusBy}}, readings: {path_lower: {rev, key, dir, r}}} */
+const INDEX_KEY = "team-index";
+// A reading without its per-window detail: enough for the dashboard, the site page, the CSV and the photos
+function compact(r) {
+  const x = Object.assign({}, r);
+  x.photos = (r.photos || []).map(p => ({name: p.name, tilt: p.tilt || null, pitchPx: p.pitchPx || null, size: p.size || null,
+                                         source: p.source || null, pick: p.pick ? {loss: p.pick.loss} : null}));
+  x.files = (r.files || []).map(f => ({kind: f.kind, suffix: f.suffix, dropboxName: f.dropboxName || null, uploaded: !!f.uploaded, lost: !!f.lost}));
+  delete x.synced;
+  return x;
+}
+const cachedIndex = () => IDB.getObj(INDEX_KEY).catch(() => null);
+let indexing = null;
+function teamIndex(local) { return indexing || (indexing = buildIndex(local).finally(() => { indexing = null; })); }
+async function buildIndex(local) {
+  if (!getAuth().signedIn()) throw new SyncError("auth", "Sign in to Dropbox to see the team’s readings.");
+  if (typeof navigator !== "undefined" && navigator.onLine === false) throw new SyncError("offline", "No signal.");
+  if (!client) { await init(); if (!client) throw new SyncError(getAuth().signedIn() ? "offline" : "auth", "Can’t read your Dropbox account yet."); }
+  await client.ensureFolder();
+  const prev = (await cachedIndex()) || {readings: {}};
+  const mine = new Map((local || []).map(r => [r.id, r]));     // this iPad's: same reading, no need to download it (even mid-upload)
+  const baseLower = BASE.toLowerCase() + "/", next = {at: Date.now(), sites: {}, readings: {}};
+  const statusFiles = [], toFetch = [];
+  for (const e of await client.list(BASE, true)) {
+    if (!e.path_lower || !e.path_lower.startsWith(baseLower)) continue;
+    const rel = e.path_display.slice(BASE.length + 1).split("/");
+    const key = rel[0].toLowerCase(), dir = BASE + "/" + rel[0];
+    if (!next.sites[key]) next.sites[key] = {name: rel[0], dir, status: "current"};
+    if (e[".tag"] !== "file" || rel.length !== 2 || !/\.json$/i.test(e.name)) continue;
+    if (e.name === STATUS_FILE) { statusFiles.push({key, e}); continue; }
+    const was = prev.readings[e.path_lower], own = mine.get(idOfJson(e.name));
+    if (own) next.readings[e.path_lower] = {rev: e.rev, key, dir, r: compact(record(own))};
+    else if (was && was.rev === e.rev) next.readings[e.path_lower] = Object.assign({}, was, {key, dir});
+    else toFetch.push({e, key, dir});
+  }
+  // download what's new, four at a time
+  let i = 0;
+  const worker = async () => {
+    while (i < toFetch.length) {
+      const {e, key, dir} = toFetch[i++];
+      let j = null; try { j = JSON.parse(await client.download(e.path_lower)); } catch (err) { if (err instanceof SyncError && err.code !== "missing") throw err; }
+      if (j && j.id) next.readings[e.path_lower] = {rev: e.rev, key, dir, r: compact(j)};
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  for (const {key, e} of statusFiles) {
+    const was = prev.sites && prev.sites[key];
+    let st = was && was.statusRev === e.rev ? was : null;
+    if (!st) { try { const j = JSON.parse(await client.download(e.path_lower)); st = {status: j.status, statusAt: j.at, statusBy: j.by, statusRev: e.rev}; } catch (err) { if (err instanceof SyncError && err.code !== "missing") throw err; } }
+    if (st) Object.assign(next.sites[key], {status: st.status === "past" ? "past" : "current", statusAt: st.statusAt || null, statusBy: st.statusBy || null, statusRev: e.rev});
+  }
+  await IDB.putObj(INDEX_KEY, next).catch(() => {});
+  return next;
+}
+// Mark a site complete ("past") or back in progress ("current"), for everyone: a small file in its folder
+async function setSiteStatus(site, status) {
+  if (!client) { await init(); if (!client) throw new SyncError("auth", "Sign in to Dropbox first."); }
+  await client.ensureFolder();
+  const dir = BASE + "/" + (safe(site) || "No site");
+  await client.upload(dir + "/" + STATUS_FILE, new Blob([JSON.stringify({status, at: new Date().toISOString(), by: acct && acct.name || ""}, null, 1)], {type: "application/json"}));
+}
+// A file from the team folder (e.g. a marked-up photo another iPad uploaded)
+async function teamFile(dir, name) {
+  if (!client) { await init(); if (!client) throw new SyncError("auth", "Sign in to Dropbox first."); }
+  return client.downloadBlob(dir + "/" + name);
+}
+
 root.TribarSync = {CONFIG, IDB, init, signIn, signOut, syncAll, redirectUri, SyncError, createDropboxAuth, createDropboxFiles,
+  teamIndex, cachedIndex, setSiteStatus, teamFile, compact, siteKey, folderName: site => safe(site) || "No site",
+  dropboxUrl: site => "https://www.dropbox.com/home/" + (CONFIG.folder + "/" + (safe(site) || "No site")).split("/").map(encodeURIComponent).join("/"),
   signedIn: () => getAuth().signedIn(), account: () => acct, pendingCsv: () => pending().length};
 })(typeof self !== "undefined" ? self : globalThis);

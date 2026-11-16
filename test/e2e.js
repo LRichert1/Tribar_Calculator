@@ -43,10 +43,12 @@ function fakeDropbox({baseExists = true} = {}) {
   const low = p => p.toLowerCase();
   const addFolder = p => { const parts = p.split("/").filter(Boolean); for (let i = 1; i <= parts.length; i++) D.folders.add(low("/" + parts.slice(0, i).join("/"))); };
   if (baseExists) addFolder(BASE);
-  D.put = (p, body) => { addFolder(p.slice(0, p.lastIndexOf("/"))); D.files.set(low(p), {path: p, body: Buffer.from(body)}); };
+  let revs = 0;
+  D.put = (p, body) => { addFolder(p.slice(0, p.lastIndexOf("/"))); D.files.set(low(p), {path: p, body: Buffer.from(body), rev: "r" + (++revs)}); };
   const CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Authorization, Content-Type, Dropbox-API-Arg, Dropbox-API-Path-Root",
                 "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Expose-Headers": "Dropbox-API-Result"};
   const json = (route, status, obj) => route.fulfill({status, headers: Object.assign({"Content-Type": "application/json"}, CORS), body: JSON.stringify(obj)});
+  const displayOf = lowPath => { const f = [...D.files.values()].find(x => low(x.path).startsWith(lowPath + "/")); return f ? f.path.slice(0, lowPath.length) : lowPath; };
   const notFound = route => json(route, 409, {error_summary: "path/not_found/..", error: {".tag": "path", path: {".tag": "not_found"}}});
 
   D.install = async ctx => {
@@ -84,12 +86,16 @@ function fakeDropbox({baseExists = true} = {}) {
       if (endpoint === "files/upload") {
         if (!team) return json(route, 403, {error_summary: "path/no_write_permission/.."});
         D.put(p, req.postDataBuffer() || Buffer.alloc(0));
-        return json(route, 200, {name: p.split("/").pop(), path_lower: low(p), path_display: p, rev: "r1"});
+        return json(route, 200, {name: p.split("/").pop(), path_lower: low(p), path_display: p, rev: D.files.get(low(p)).rev});
       }
       if (endpoint === "files/list_folder") {
         if (!team || !D.folders.has(low(p))) return notFound(route);
-        const entries = [...D.files.values()].filter(f => low(f.path.slice(0, f.path.lastIndexOf("/"))) === low(p))
-          .map(f => ({".tag": "file", name: f.path.split("/").pop(), path_lower: low(f.path), path_display: f.path}));
+        const under = x => arg.recursive ? low(x).startsWith(low(p) + "/") : low(x.slice(0, x.lastIndexOf("/"))) === low(p);
+        const folderOf = x => [...D.folders].find(f => f === low(x));
+        const entries = [...D.files.values()].filter(f => under(f.path))
+          .map(f => ({".tag": "file", name: f.path.split("/").pop(), path_lower: low(f.path), path_display: f.path, rev: f.rev}));
+        if (arg.recursive) for (const f of D.folders) if (f.startsWith(low(p) + "/"))
+          entries.push({".tag": "folder", name: f.split("/").pop(), path_lower: f, path_display: displayOf(f)});
         return json(route, 200, {entries, has_more: false, cursor: "c"});
       }
       if (endpoint === "files/download") {
@@ -134,8 +140,10 @@ async function main() {
   // another iPad's reading, already in the site folder
   const other = {id: "zzzz9999", savedAt: "2026-11-01T15:00:00.000Z", site: SITE, barn: "Barn B", room: "1", row: "2", crate: "3",
                  band: "30-40%", worstSpot: 0.35, spotsAveraged: 3, spotLosses: [0.33, 0.35, 0.37], spotSpread: 0.04,
-                 worstSpotN: 60, worstBar: 0.3, worstSpotPhoto: "x.jpg", typical: 0.3, used: 12, total: 12, baseline: 0.4686, photos: [], files: []};
+                 worstSpotN: 60, worstBar: 0.3, worstSpotPhoto: "x.jpg", typical: 0.3, used: 12, total: 12, baseline: 0.4686, by: "Other Inspector",
+                 photos: [{name: "x.jpg", pick: {loss: 0.35}}], files: [{kind: "marked", suffix: "marked 1.jpg", uploaded: true, dropboxName: "2026-11-01 Barn B Room 1 Row 2 Crate 3 zzzz9999 marked 1.jpg"}]};
   D.put(BASE + "/" + SITE + "/2026-11-01 Barn B Room 1 Row 2 Crate 3 zzzz9999.json", JSON.stringify(other));
+  D.put(BASE + "/" + SITE + "/2026-11-01 Barn B Room 1 Row 2 Crate 3 zzzz9999 marked 1.jpg", fs.readFileSync(path.join(PHOTOS, "far-off.jpg")));
 
   const ctx = await browser.newContext({viewport: {width: 1100, height: 900}, serviceWorkers: "block", acceptDownloads: true});
   await D.install(ctx);
@@ -156,6 +164,11 @@ async function main() {
   const vis = await page.evaluate(() => ["#signInBtn", "#signOutBtn", "#syncBtn"].map(s => getComputedStyle(document.querySelector(s)).display));
   ok(vis[0] !== "none" && vis[1] === "none" && vis[2] === "none", "signed out: Sign in shown, Sign out and Sync now hidden (" + vis.join(", ") + ")");
   ok(/Not backed up/.test(await page.textContent("#syncMsg")), "sync bar says readings are only on this device");
+  ok(await page.isVisible("#dashView") && !(await page.isVisible("#measureView")), "opens on the dashboard");
+  ok(/Old Site/.test(await page.textContent("#dashTable")) && /1 not backed up/.test(await page.textContent("#dashTable")), "signed out, the dashboard lists this iPad's readings by site");
+  await page.click("#newReadingBtn");
+  await page.waitForFunction(() => VIEW.name === "measure");
+  ok(await page.isVisible("#measureView") && page.url().endsWith("#/measure"), "+ New reading opens the measuring page");
 
   /* ---- averaging ---- */
   for (const [id, v] of [["#fSite", SITE], ["#fBarn", "Farrowing 2"], ["#fRoom", "3"], ["#fRow", "2"], ["#fCrate", "5"]]) await page.fill(id, v);
@@ -210,8 +223,10 @@ async function main() {
   const shared = await page.evaluate(() => __names);
   ok(shared.length === 3 && shared.every((n, i) => n === "Test Site’s Farm - Farrowing 2 Room 3 Row 2 Crate 5 - marked " + (i + 1) + ".jpg"), "Share (download here, share sheet on the iPad): " + shared.join(" | "));
 
-  /* ---- sign in ---- */
-  await Promise.all([page.waitForURL(u => /code=/.test(u) || /Tribar_Calculator\/$/.test(u)), page.click("#signInBtn")]);
+  /* ---- sign in (from the dashboard) ---- */
+  await page.click("#measureCrumbs >> text=‹ Dashboard");
+  await page.waitForFunction(() => VIEW.name === "dash");
+  await Promise.all([page.waitForURL(u => /code=/.test(u)), page.click("#signInBtn")]);
   await page.waitForFunction(() => /all readings backed up/.test(document.querySelector("#syncMsg").textContent), null, {timeout: 30000});
   const auth = D.authorize[0];
   ok(auth.redirect_uri === APP && auth.code_challenge_method === "S256" && auth.token_access_type === "offline" &&
@@ -235,7 +250,8 @@ async function main() {
   const csv = D.files.get((site + "Tribar readings - " + SITE + ".csv").toLowerCase());
   const csvText = csv && csv.body.toString("utf8");
   ok(csv && /Barn B/.test(csvText) && /Farrowing 2/.test(csvText) && csvText.trim().split("\r\n").length === 3, "site CSV rebuilt from both iPads' readings (2 rows + header)");
-  ok(D.log.filter(l => l.endpoint === "files/download").length === 1, "CSV rebuild downloads only the other iPad's JSON");
+  const gets = D.log.filter(l => l.endpoint === "files/download").map(l => l.headers["dropbox-api-arg"]);
+  ok(gets.length && gets.every(a => a.includes("zzzz9999")), "only the other iPad's JSON is downloaded (CSV rebuild and dashboard), never this iPad's own" + (gets.every(a => a.includes("zzzz9999")) ? "" : ": " + gets.join(" | ")));
   ok(D.files.has((BASE + "/Old Site/Tribar readings - Old Site.csv").toLowerCase()), "old site's CSV built too");
   const j1 = JSON.parse(D.files.get(mine.find(n => n.endsWith(".json")).toLowerCase()).body);
   ok(j1.spotsAveraged === 3 && j1.files.every(f => f.uploaded && f.dropboxName && !f.key) && !("synced" in j1), "uploaded JSON lists its photos' Dropbox names");
@@ -244,6 +260,78 @@ async function main() {
   ok(/Backed up/.test(await page.textContent(".reading .cloud")), "reading shows Backed up");
   const v2 = await page.evaluate(() => ["#signInBtn", "#signOutBtn", "#syncBtn"].map(s => getComputedStyle(document.querySelector(s)).display));
   ok(v2[0] === "none" && v2[1] !== "none" && v2[2] !== "none", "signed in: Sign out and Sync now shown, Sign in hidden");
+  ok(page.url().endsWith("#/") && await page.isVisible("#dashView"), "back from sign-in on the page it was started from (dashboard)");
+
+  /* ---- dashboard: every site in the team folder ---- */
+  await page.waitForFunction(() => TEAM.index && !TEAM.busy && Object.keys(TEAM.index.readings).length >= 3, null, {timeout: 20000});
+  const dashRows = await page.$$eval("#dashTable tbody tr", trs => trs.map(tr => [...tr.cells].map(c => c.innerText.trim())));
+  const tsf = dashRows.find(r => r[0] === SITE), old = dashRows.find(r => r[0] === "Old Site");
+  ok(tsf && tsf[1] === "2" && tsf[2] === "30 to 40%" && tsf[4] === "2" && /Backed up/.test(tsf[6]), "dashboard: " + SITE + " with the other iPad's reading: " + (tsf || []).join(" | "));
+  ok(old && old[1] === "1", "dashboard: Old Site with its 1 reading");
+  const kp = await page.$$eval("#dashKpis .kpi", ks => ks.map(k => k.innerText.replace(/\s+/g, " ").trim()));
+  ok(kp[0] === "2 SITES" && kp[1] === "3 READINGS" && /^30 to 40% WORST READING$/i.test(kp[2]) && /^0 NOT BACKED UP/i.test(kp[3]), "KPIs: " + kp.join(" · "));
+  const downloads = () => D.log.filter(l => l.endpoint === "files/download").length;
+  const dl0 = downloads();
+  await page.click("#syncBtn");
+  await page.waitForFunction(() => !TEAM.busy && Date.now() - TEAM.index.at < 3000);
+  ok(downloads() === dl0, "Sync now re-reads the team folder without downloading readings it already has");
+  ok(/Team folder checked/.test(await page.textContent("#syncMsg")), "sync bar says when the team folder was checked");
+  await page.fill("#dashSearch", "old");
+  ok((await page.$$("#dashTable tbody tr")).length === 1, "search narrows the list");
+  await page.fill("#dashSearch", "");
+
+  /* ---- a site's page ---- */
+  await page.click("#dashTable tbody tr >> text=" + SITE);
+  await page.waitForFunction(() => VIEW.name === "site");
+  ok(await page.isVisible("#siteView") && decodeURIComponent(page.url()).endsWith("#/site/" + SITE), "a row opens the site's page");
+  const siteRows = await page.$$eval("#siteView tbody tr", trs => trs.map(tr => [...tr.cells].map(c => c.innerText.replace(/\s+/g, " ").trim())));
+  ok(siteRows.length === 2 && /^Barn B/.test(siteRows[0][0]) && /^Farrowing 2/.test(siteRows[1][0]), "readings in barn order: " + siteRows.map(r => r[0]).join(" / "));
+  ok(/Other Inspector/.test(siteRows[0][4]) && /Test Inspector/.test(siteRows[1][4]), "each reading says who saved it");
+  ok(/avg of 3, spread/.test(siteRows[1][2]), "the averaged reading shows its photo count and spread");
+  // a photo another iPad uploaded comes from Dropbox
+  await page.click("#siteView tbody tr:nth-child(1) >> text=🖼 Photo");
+  await page.waitForFunction(() => !document.querySelector("#lightbox").hidden && document.querySelector("#lbImg").naturalWidth > 0, null, {timeout: 15000});
+  ok(D.log.some(l => l.endpoint === "files/download" && /zzzz9999 marked 1\.jpg/.test(l.headers["dropbox-api-arg"])), "the other iPad's marked-up photo opens from Dropbox");
+  await page.click("#lbClose");
+  // this iPad's comes from the device: 3 photos
+  const dlBefore = downloads();
+  await page.click("#siteView tbody tr:nth-child(2) >> text=🖼 Photos");
+  await page.waitForFunction(() => !document.querySelector("#lightbox").hidden && document.querySelector("#lbImg").naturalWidth > 0);
+  ok((await page.textContent("#lbN")) === "1 of 3" && downloads() === dlBefore, "this iPad's 3 marked-up photos open from the device");
+  await page.click("#lbNext");
+  await page.waitForFunction(() => document.querySelector("#lbImg").complete && document.querySelector("#lbImg").naturalWidth > 0);
+  const second = await page.evaluate(() => ({n: document.querySelector("#lbN").textContent, file: LB.files[LB.i].name, src: document.querySelector("#lbImg").src === LB.urls[1]}));
+  ok(second.n === "2 of 3" && / marked 2\.jpg$/.test(second.file) && second.src, "› goes to the next photo (" + second.file + ")");
+  if (SHOTS) await page.screenshot({path: path.join(SHOTS, "lightbox.png")});
+  await page.click("#lbClose");
+  // CSV of the site
+  await page.evaluate(() => { window.__names = []; const orig = downloadBlob; downloadBlob = (n, b) => { __names.push(n); window.__csv = b; orig(n, b); }; });
+  await Promise.all([page.waitForEvent("download"), page.click("#siteView >> text=⬇ CSV")]);
+  const csvRows = await page.evaluate(async () => (await window.__csv.text()).trim().split("\r\n").length);
+  ok(csvRows === 3 && /^Tribar readings - Test Site’s Farm - \d{4}-\d\d-\d\d\.csv$/.test(await page.evaluate(() => __names[0])), "site CSV download: 2 readings + header");
+  ok(/Tribar%20Readings\/Test%20Site%E2%80%99s%20Farm$/.test(await page.getAttribute("#siteView a.btn", "href")), "Open in Dropbox links to the site folder");
+  // mark complete, for everyone
+  page.once("dialog", d => d.accept());
+  await page.click("#siteView >> text=✓ Mark complete");
+  await page.waitForFunction(() => /marked complete/.test(document.querySelector("#siteView .vsub").textContent), null, {timeout: 15000});
+  const st = D.files.get((site + "Site status.json").toLowerCase());
+  ok(st && JSON.parse(st.body).status === "past" && JSON.parse(st.body).by === "Test Inspector", "Mark complete writes the site's status to its folder");
+  await page.click("#siteView >> text=‹ Dashboard");
+  await page.waitForFunction(() => VIEW.name === "dash");
+  const tabsTxt = await page.textContent("#dashTabs");
+  ok(/Current\s*1/.test(tabsTxt) && /Past\s*1/.test(tabsTxt), "dashboard tabs: 1 current, 1 past (" + tabsTxt.replace(/\s+/g, " ") + ")");
+  ok(await page.evaluate(() => (D => !D.includes("Site status"))(JSON.stringify(Object.keys(TEAM.index.readings)))), "the status file isn't counted as a reading");
+  if (SHOTS) { await page.screenshot({path: path.join(SHOTS, "dashboard.png")}); }
+  await page.click("#dashTable tbody tr >> text=" + SITE);
+  await page.waitForFunction(() => VIEW.name === "site");
+  page.once("dialog", d => d.accept());
+  await page.click("#siteView >> text=Reopen");
+  await page.waitForFunction(() => !/marked complete/.test(document.querySelector("#siteView .vsub").textContent), null, {timeout: 15000});
+  ok(JSON.parse(D.files.get((site + "Site status.json").toLowerCase()).body).status === "current", "Reopen puts it back");
+  if (SHOTS) { await page.screenshot({path: path.join(SHOTS, "site.png"), fullPage: true}); }
+  await page.click("#siteView >> text=+ New reading here");
+  await page.waitForFunction(() => VIEW.name === "measure");
+  ok(await page.isVisible("#measureView") && (await page.inputValue("#fSite")) === SITE && (await page.inputValue("#fBarn")) === "Farrowing 2", "+ New reading here opens measuring at that site");
 
   /* ---- a 401 renews the token once ---- */
   D.expired.add("AT1");
@@ -262,12 +350,11 @@ async function main() {
   await ctx.setOffline(false);
   await page.waitForFunction(() => STATE.readings.every(r => r.synced) && !TribarSync.pendingCsv() && !SYNC.busy, null, {timeout: 30000});
   ok(true, "back online: uploaded without a tap");
-  ok([...D.files.keys()].filter(k => k.endsWith(".json") && k.startsWith(site.toLowerCase())).length === 4 &&
+  ok([...D.files.keys()].filter(k => k.endsWith(".json") && !k.endsWith("site status.json") && k.startsWith(site.toLowerCase())).length === 4 &&
      D.files.get((site + "Tribar readings - " + SITE + ".csv").toLowerCase()).body.toString().trim().split("\r\n").length === 5, "site CSV now has all 4 readings");
   const [dl2] = await Promise.all([page.waitForEvent("download"), page.click(".reading button[title='Share the marked-up photo']")]);
   ok(!!dl2, "Share still works after backup (marked-up photo kept)");
-  await page.click("#syncBtn");
-  ok(/Everything on this device is backed up/.test(await page.textContent("#toast")), "Sync now with nothing to do says so");
+  ok(await page.evaluate(async () => Object.keys((await TribarSync.cachedIndex()).readings).length) >= 3, "the team folder's index is kept on the device for when there's no signal");
 
   /* ---- low resolution ---- */
   await page.click("text=Discard").catch(() => {});
@@ -290,12 +377,23 @@ async function main() {
     await page.$eval("#saved", e => e.scrollIntoView({block: "end"}));
     await page.screenshot({path: path.join(SHOTS, "phone-saved.png")});
   }
+  for (const [h, what] of [["#/", "dashboard"], ["#/site/" + encodeURIComponent(SITE), "site page"]]) {
+    await page.evaluate(h => { location.hash = h; }, h); await page.waitForTimeout(300);
+    const o = await page.evaluate(() => ({doc: document.documentElement.scrollWidth, wide: [...document.querySelectorAll("body *")].filter(e => e.getBoundingClientRect().right > innerWidth + 1 && getComputedStyle(e).position !== "fixed" && e.offsetParent).map(e => e.tagName + "." + e.className).slice(0, 8)}));
+    ok(o.doc <= 390 && !o.wide.length, "390 px wide " + what + ": no sideways scroll" + (o.wide.length ? " (too wide: " + o.wide.join(", ") + ")" : ""));
+    if (SHOTS) await page.screenshot({path: path.join(SHOTS, "phone-" + what.split(" ")[0] + ".png"), fullPage: true});
+  }
+  await page.evaluate(() => { location.hash = "#/measure"; }); await page.waitForTimeout(300);
   if (SHOTS) {          // and an iPad in portrait, for a look
     await page.setViewportSize({width: 820, height: 1180});
     await page.$eval("#resultCard", e => e.scrollIntoView());
     await page.screenshot({path: path.join(SHOTS, "ipad-result.png")});
     await page.$eval("#saved", e => e.scrollIntoView({block: "end"}));
     await page.screenshot({path: path.join(SHOTS, "ipad-saved.png")});
+    await page.evaluate(() => { location.hash = "#/"; }); await page.waitForTimeout(300);
+    await page.screenshot({path: path.join(SHOTS, "ipad-dashboard.png")});
+    await page.evaluate(h => { location.hash = h; }, "#/site/" + encodeURIComponent(SITE)); await page.waitForTimeout(300);
+    await page.screenshot({path: path.join(SHOTS, "ipad-site.png")});
   }
   ok(!errors.length, "no page errors" + (errors.length ? ": " + errors.join("; ") : ""));
   await ctx.close();
@@ -332,7 +430,7 @@ async function main() {
   /* ---- in-app camera: shows the photo size ---- */
   {
     const c4 = await browser.newContext({serviceWorkers: "block", permissions: ["camera"]});
-    const p4 = await c4.newPage(); await p4.goto(APP);
+    const p4 = await c4.newPage(); await p4.goto(APP + "#/measure");
     await p4.click("#shootBtn");
     await p4.waitForFunction(() => !document.querySelector("#camRes").hidden, null, {timeout: 15000}).catch(() => {});
     const label = await p4.textContent("#camRes");
