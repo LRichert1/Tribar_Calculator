@@ -94,8 +94,8 @@ function fakeDropbox({baseExists = true} = {}) {
         const folderOf = x => [...D.folders].find(f => f === low(x));
         const entries = [...D.files.values()].filter(f => under(f.path))
           .map(f => ({".tag": "file", name: f.path.split("/").pop(), path_lower: low(f.path), path_display: f.path, rev: f.rev}));
-        if (arg.recursive) for (const f of D.folders) if (f.startsWith(low(p) + "/"))
-          entries.push({".tag": "folder", name: f.split("/").pop(), path_lower: f, path_display: displayOf(f)});
+        for (const f of D.folders) if (arg.recursive ? f.startsWith(low(p) + "/") : f.slice(0, f.lastIndexOf("/")) === low(p))   // subfolders, like Dropbox
+          entries.push({".tag": "folder", name: displayOf(f).split("/").pop(), path_lower: f, path_display: displayOf(f)});
         return json(route, 200, {entries, has_more: false, cursor: "c"});
       }
       if (endpoint === "files/download") {
@@ -131,6 +131,13 @@ async function tap(page, i, fx = 0.5, fy = 0.5) {
 }
 const resultText = page => page.$eval("#resultCard", e => e.innerText);
 const near = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol;
+// CSV text -> rows of cells (quoted cells may hold commas)
+const parseCsv = text => text.replace(/^\ufeff/, "").trim().split("\r\n").map(line => {
+  const out = []; let cur = "", q = false;
+  for (let i = 0; i < line.length; i++){ const ch = line[i];
+    if (q){ if (ch === '"' && line[i + 1] === '"'){ cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; }
+    else if (ch === '"') q = true; else if (ch === ","){ out.push(cur); cur = ""; } else cur += ch; }
+  out.push(cur); return out; });
 
 async function main() {
   await new Promise(r => server.listen(0, r));
@@ -180,8 +187,18 @@ async function main() {
   await addPhotos(page, "spot-2.jpg");
   t = await resultText(page);
   ok(/1 photo has no spot tapped/.test(t) && /Take 1 more photo of/.test(t), "second photo untapped: asks to tap it, then 1 more photo");
+  const guides = await page.$$eval(".photo", cards => cards.map(c => { const g = c.querySelector(".guide"); if (!g || g.hidden) return null;
+    const cv = g.querySelector("canvas"), d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+    let yellow = 0, photo = 0; for (let i = 0; i < d.length; i += 4){ if (d[i] > 200 && d[i + 1] > 180 && d[i + 2] < 80) yellow++; else if (d[i] + d[i + 1] + d[i + 2] > 120) photo++; }
+    return {text: g.innerText, w: cv.width, h: cv.height, yellow, photo}; }));
+  ok(guides[0] === null && guides[1] && /^Tap this same spot/.test(guides[1].text) && guides[1].yellow > 100 && guides[1].photo > 2000,
+     "photo 2 shows a close-up of the spot tapped in photo 1, outlined, labeled Tap this same spot (" + (guides[1] ? guides[1].w + "×" + guides[1].h : "none") + "); photo 1 doesn't");
+  const pitch1 = await page.evaluate(() => { const p = STATE.photos[0].pick, m = p.spot[p.spot.length >> 1]; return m[3]; });
+  ok(guides[1] && Math.abs(guides[1].w / 200 - 1) < 1e-9, "close-up spans two bar spacings (" + Math.round(2 * pitch1) + " px of photo 1)");
+  if (SHOTS) await page.$eval(".photo:nth-child(2)", e => e.scrollIntoView()), await page.screenshot({path: path.join(SHOTS, "guide.png")});
   const l2 = await tap(page, 1);
   await addPhotos(page, "spot-3.jpg");
+  ok(await page.$eval(".photo:nth-child(3) .guide", g => !g.hidden), "a third photo gets the close-up too");
   const l3 = await tap(page, 2);
   t = await resultText(page);
   const mean = (l1 + l2 + l3) / 3, spread = Math.max(l1, l2, l3) - Math.min(l1, l2, l3);
@@ -250,6 +267,10 @@ async function main() {
   const csv = D.files.get((site + "Tribar readings - " + SITE + ".csv").toLowerCase());
   const csvText = csv && csv.body.toString("utf8");
   ok(csv && /Barn B/.test(csvText) && /Farrowing 2/.test(csvText) && csvText.trim().split("\r\n").length === 3, "site CSV rebuilt from both iPads' readings (2 rows + header)");
+  { const rows = parseCsv(csvText), col = rows[0].indexOf("Saved by");
+    ok(col > 0 && rows.slice(1).map(r => r[col]).sort().join("|") === "Other Inspector|Test Inspector", "site CSV in Dropbox has a Saved by column: " + rows.slice(1).map(r => r[col]).join(", ")); }
+  ok(JSON.parse(D.files.get((BASE + "/Old Site/2026-10-20 Gestation Room 4 Row 1 old00001.json").toLowerCase()).body).by === "Test Inspector",
+     "a reading saved signed out gets who saved it when it uploads");
   const gets = D.log.filter(l => l.endpoint === "files/download").map(l => l.headers["dropbox-api-arg"]);
   ok(gets.length && gets.every(a => a.includes("zzzz9999")), "only the other iPad's JSON is downloaded (CSV rebuild and dashboard), never this iPad's own" + (gets.every(a => a.includes("zzzz9999")) ? "" : ": " + gets.join(" | ")));
   ok(D.files.has((BASE + "/Old Site/Tribar readings - Old Site.csv").toLowerCase()), "old site's CSV built too");
@@ -308,6 +329,7 @@ async function main() {
   await page.evaluate(() => { window.__names = []; const orig = downloadBlob; downloadBlob = (n, b) => { __names.push(n); window.__csv = b; orig(n, b); }; });
   await Promise.all([page.waitForEvent("download"), page.click("#siteView >> text=⬇ CSV")]);
   const csvRows = await page.evaluate(async () => (await window.__csv.text()).trim().split("\r\n").length);
+  ok(/,Saved by,/.test(await page.evaluate(async () => (await window.__csv.text()).split("\r\n")[0])), "site CSV download has Saved by");
   ok(csvRows === 3 && /^Tribar readings - Test Site’s Farm - \d{4}-\d\d-\d\d\.csv$/.test(await page.evaluate(() => __names[0])), "site CSV download: 2 readings + header");
   ok(/Tribar%20Readings\/Test%20Site%E2%80%99s%20Farm$/.test(await page.getAttribute("#siteView a.btn", "href")), "Open in Dropbox links to the site folder");
   // mark complete, for everyone
@@ -354,6 +376,11 @@ async function main() {
      D.files.get((site + "Tribar readings - " + SITE + ".csv").toLowerCase()).body.toString().trim().split("\r\n").length === 5, "site CSV now has all 4 readings");
   const [dl2] = await Promise.all([page.waitForEvent("download"), page.click(".reading button[title='Share the marked-up photo']")]);
   ok(!!dl2, "Share still works after backup (marked-up photo kept)");
+  await page.evaluate(() => { window.__exp = null; const orig = downloadBlob; downloadBlob = (n, b) => { window.__exp = b; orig(n, b); }; });
+  await Promise.all([page.waitForEvent("download"), page.click("#csvBtn")]);
+  { const rows = parseCsv(await page.evaluate(async () => window.__exp.text()));
+    const col = rows[0].indexOf("Saved by");
+    ok(col > 0 && rows.length === 5 && rows.slice(1).every(r => r[col] === "Test Inspector"), "Export CSV has a Saved by column, filled for every reading"); }
   ok(await page.evaluate(async () => Object.keys((await TribarSync.cachedIndex()).readings).length) >= 3, "the team folder's index is kept on the device for when there's no signal");
 
   /* ---- low resolution ---- */
@@ -418,12 +445,18 @@ async function main() {
   {
     const D3 = fakeDropbox();
     const c3 = await browser.newContext({serviceWorkers: "block"}); await D3.install(c3);
+    await c3.addInitScript(() => { if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: [
+      {id: "nobyby01", savedAt: "2026-11-16T17:04:12Z", site: "c44", barn: "farrowing", room: "15", row: "2", crate: "1", band: "0-10%", worstSpot: -0.03,
+       photos: [], files: [], synced: "2026-11-16T17:04:16Z"}]})); });
     const p3 = await c3.newPage(), other = "http://127.0.0.1:" + port + "/Tribar_Calculator/";
     await p3.goto(other + "index.html");
     await Promise.all([p3.waitForURL(/code=|Tribar_Calculator\/$/), p3.click("#signInBtn")]);
     await p3.waitForFunction(() => TribarSync.account(), null, {timeout: 15000}).catch(() => {});
     ok(D3.authorize[0].redirect_uri === other && D3.tokenCalls[0].redirect_uri === other && await p3.evaluate(() => !!TribarSync.account()),
        "opened at " + other + "index.html: redirect URI " + D3.authorize[0].redirect_uri + ", signed in");
+    await p3.waitForFunction(() => STATE.readings[0].by, null, {timeout: 15000}).catch(() => {});
+    const nb = D3.files.get((BASE + "/c44/2026-11-16 farrowing Room 15 Row 2 Crate 1 nobyby01.json").toLowerCase());
+    ok(nb && JSON.parse(nb.body).by === "Test Inspector", "a reading backed up without who saved it is re-uploaded with the signed-in name, once" + (nb ? "" : " — files: " + [...D3.files.values()].map(f => f.path.slice(BASE.length)).join(" | ")));
     await c3.close();
   }
 
@@ -460,6 +493,49 @@ async function main() {
     await p5.reload();
     ok(await p5.evaluate(() => typeof TribarSync === "object" && typeof Tribar === "object"), "reloads offline with both scripts");
     await c5.close();
+  }
+
+  /* ---- one site, however its name is typed ---- */
+  {
+    const keys = await (async () => { const c = await browser.newContext({serviceWorkers: "block"}), q = await c.newPage(); await q.goto(APP);
+      const k = await q.evaluate(() => ["C-44", "C44", "C044", "c 44", "C 044", "c_44", "C.44", "Peddler Creek Pork", "peddler-creek pork"].map(TribarSync.siteKey)); await c.close(); return k; })();
+    ok(keys.slice(0, 7).every(k => k === "C44") && keys[7] === keys[8] && keys[7] !== "C44", "site keys: " + keys.join(", "));
+    const D7 = fakeDropbox();
+    const mk = (id, site, folder, day) => { const r = {id, savedAt: "2026-11-" + day + "T15:00:00.000Z", site, barn: "B", room: "1", row: "1", crate: "1", band: "10-20%",
+      worstSpot: 0.15, by: "Other Inspector", photos: [], files: []}; D7.put(BASE + "/" + folder + "/2026-11-" + day + " B Room 1 Row 1 Crate 1 " + id + ".json", JSON.stringify(r)); };
+    mk("old44aaa", "C044", "C044", "01"); mk("site9aaa", "C9", "C9", "02"); mk("sit100aa", "C100", "C100", "03"); mk("site10aa", "C10", "C10", "04");
+    const c7 = await browser.newContext({serviceWorkers: "block"}); await D7.install(c7);
+    await c7.addInitScript(() => {
+      localStorage.setItem("tribar.dbx.tokens", JSON.stringify({access: "AT1", refresh: "RT", expiresAt: Date.now() + 3600e3}));
+      localStorage.setItem("tribar.dbx.account", JSON.stringify({name: "Test Inspector", rootNamespaceId: "7777"}));
+      if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: ["c 44", "C-44"].map((site, i) => (
+        {id: "mine44a" + i, savedAt: "2026-11-16T1" + i + ":00:00.000Z", site, barn: "Farrowing", room: "2", row: "3", crate: String(4 + i), band: "20-30%", worstSpot: 0.25,
+         photos: [], files: [], synced: false}))}));
+    });
+    const p7 = await c7.newPage(); const errs7 = []; p7.on("pageerror", e => errs7.push(e.message));
+    await p7.goto(APP);
+    await p7.waitForFunction(() => STATE.readings.every(r => r.synced) && !SYNC.busy && !TribarSync.pendingCsv(), null, {timeout: 20000});
+    await p7.click("#syncBtn"); await p7.waitForFunction(() => TEAM.index && !TEAM.busy && Object.keys(TEAM.index.readings).length === 6, null, {timeout: 15000});
+    const paths = [...D7.files.values()].map(f => f.path.slice(BASE.length + 1));
+    ok(paths.filter(n => /mine44a/.test(n)).length === 2 && paths.filter(n => /mine44a/.test(n)).every(n => n.startsWith("C044/")) && !paths.some(n => /^(c 44|C-44)\//.test(n)),
+       "readings typed “c 44” and “C-44” upload into the existing C044 folder, no new folder: " + paths.join(" | "));
+    const csv7 = D7.files.get((BASE + "/C044/Tribar readings - C044.csv").toLowerCase());
+    ok(csv7 && csv7.body.toString().trim().split("\r\n").length === 4, "C044's CSV has all 3 readings");
+    const rows7 = await p7.$$eval("#dashTable tbody tr", t => t.map(r => [r.cells[0].innerText.trim(), r.cells[1].innerText.trim()]));
+    ok(rows7.map(r => r[0]).join(",") === "C9,C10,C044,C100", "sites in natural order, one row per site: " + rows7.map(r => r.join(" ")).join(" | "));
+    ok((rows7.find(r => r[0] === "C044") || [])[1] === "3", "C044 shows its own reading and both of this iPad's");
+    await p7.evaluate(() => { location.hash = "#/site/c-44"; }); await p7.waitForFunction(() => VIEW.name === "site");
+    ok((await p7.textContent("#siteView .vtitle")) === "C044" && (await p7.$$("#siteView tbody tr")).length === 3, "the site page for “c-44” is C044 with 3 readings");
+    p7.once("dialog", d => d.accept());
+    await p7.click("#siteView >> text=✓ Mark complete");
+    await p7.waitForFunction(() => /marked complete/.test(document.querySelector("#siteView .vsub").textContent), null, {timeout: 15000});
+    ok(D7.files.has((BASE + "/C044/Site status.json").toLowerCase()) && ![...D7.files.keys()].some(k => /\/c-44\//.test(k)), "Mark complete writes to the C044 folder");
+    await p7.click("#siteView >> text=+ New reading here");
+    await p7.waitForFunction(() => VIEW.name === "measure");
+    const opts = await p7.$$eval("#siteList option", o => o.map(x => x.value));
+    ok(opts.join(",") === "C9,C10,C044,C100" && (await p7.getAttribute("#fSite", "list")) === "siteList", "the Site field suggests each site once: " + opts.join(", "));
+    ok(!errs7.length, "no page errors" + (errs7.length ? ": " + errs7.join("; ") : ""));
+    await c7.close();
   }
 
   /* ---- a new page with the browser's cached copy of the previous sync.js ---- */
