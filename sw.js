@@ -4,11 +4,12 @@
    re-uploaded version is picked up automatically the next time the phone
    has signal — no version bump needed. (Bump CACHE only to force-clear the
    offline copy.) */
-const CACHE = "tribar-v1";
+const CACHE = "tribar-v2";
 const ASSETS = [
   "./",
   "./index.html",
   "./tribar.js",
+  "./sync.js",
   "./worker.js",
   "./manifest.webmanifest",
   "./icon-180.png",
@@ -29,7 +30,8 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // Only this app's old caches: at johnsonenggrp.github.io the Ventilation app shares this origin and its cache storage
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("tribar-") && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
