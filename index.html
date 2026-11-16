@@ -224,6 +224,12 @@
   .lb-img img{max-width:100%;max-height:100%;object-fit:contain;background:#fff}
   .lb .btn{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.25)}
 
+  /* "Tap this same spot" close-up */
+  .guide{display:flex;align-items:center;gap:12px;margin:0 0 8px;padding:7px 9px;background:#fff8d6;border:1px solid #f0d36a;
+         border-radius:8px;font-size:13.5px;color:#4d3b00}
+  .guide canvas{display:block;width:110px;height:auto;border-radius:4px;flex:none}
+  .guide b{font-size:14.5px}
+
   .toast{
     position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
     background:var(--brand-700);color:#fff;padding:11px 18px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.25);
@@ -272,7 +278,7 @@
   <section class="card">
     <div class="hdr"><h2>Location</h2></div>
     <div class="loc">
-      <div class="f"><label for="fSite">Site</label><input class="text" id="fSite" placeholder="e.g. C072" autocomplete="off"></div>
+      <div class="f"><label for="fSite">Site</label><input class="text" id="fSite" placeholder="e.g. C072" autocomplete="off" list="siteList"><datalist id="siteList"></datalist></div>
       <div class="f"><label for="fBarn">Barn</label><input class="text" id="fBarn" placeholder="e.g. Farrowing 2" autocomplete="off"></div>
       <div class="f"><label for="fRoom">Room</label><input class="text" id="fRoom" inputmode="numeric" autocomplete="off"></div>
       <div class="f"><label for="fRow">Row</label><input class="text" id="fRow" inputmode="numeric" autocomplete="off"></div>
@@ -626,7 +632,7 @@ function tapBar(ph, ev){
     if (t.loss < WIDER_THAN_NEW) toast("This spot reads " + pct(-t.loss) + " wider than new tribar, so it isn't a real width. See the note under Result.");
     else if (t.n < 4) toast("Only " + t.n + " readings at that spot. Tap a little up or down the bar, or retake closer and flatter.");
   }
-  drawOverlay(ph); photoLine(ph); renderResult();
+  drawOverlay(ph); photoLine(ph); renderResult(); updateGuides();
 }
 
 function photoLine(ph){
@@ -688,6 +694,7 @@ function renderPhotos(){
     ])]);
     if (ph.status === "done"){
       if (!ph.stage) drawPhoto(ph);
+      card.appendChild(ph.guideEl = el("div", {class:"guide", hidden:""}));
       card.appendChild(ph.stage);
       card.appendChild(ph.lineEl = el("div", {class:"ph-line"}));
       card.appendChild(ph.tiltEl = el("div", {class:"ph-line", hidden:""}));
@@ -703,6 +710,49 @@ function renderPhotos(){
     box.appendChild(card);
   }
   $("#photoTools").hidden = !STATE.photos.some(p => p.status === "done");
+  updateGuides();
+}
+
+/* ------------------------------------------------------------------ *
+ *  "Tap this same spot". The result averages one spot over the photos,
+ *  so once a spot is tapped in the reading's first tapped photo, a
+ *  close-up of it (about two bar spacings wide, the spot outlined) sits
+ *  at the top of every other photo.
+ * ------------------------------------------------------------------ */
+let guideSrc = null;
+function spotCrop(ph){
+  const p = ph.pick, mid = p.spot[p.spot.length >> 1], pitch = mid[3], s = ph.scale, base = ph.base;
+  const y0 = p.spot[0][0], y1 = p.spot[p.spot.length - 1][0];
+  const cx = mid[1] * s, cy = (y0 + y1) / 2 * s, w = 2 * pitch * s, h = Math.max(w, (y1 - y0 + pitch) * s);
+  const W = 200, H = Math.round(W * h / w), k = W / w, left = cx - w / 2, top = cy - h / 2;
+  const cv = el("canvas"); cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#111"; ctx.fillRect(0, 0, W, H);
+  // the source rectangle kept inside the photo (Safari draws nothing for one that runs off the edge)
+  const sx0 = Math.max(0, left), sy0 = Math.max(0, top), sx1 = Math.min(base.width, cx + w / 2), sy1 = Math.min(base.height, cy + h / 2);
+  if (sx1 > sx0 && sy1 > sy0) ctx.drawImage(base, sx0, sy0, sx1 - sx0, sy1 - sy0, (sx0 - left) * k, (sy0 - top) * k, (sx1 - sx0) * k, (sy1 - sy0) * k);
+  const half = (Tribar.BASELINE_RATIO / 2 + 0.08) * pitch * s * k;     // a new bar's width and a little margin: the bar, not the gaps
+  ctx.strokeStyle = "#ffd400"; ctx.lineWidth = 3;
+  ctx.strokeRect(W / 2 - half, (y0 * s - top) * k - 3, 2 * half, (y1 - y0) * s * k + 6);
+  return cv;
+}
+function updateGuides(){
+  const ref = STATE.photos.find(p => p.status === "done" && p.pick && p.base);
+  const sig = ref ? ref.id + ":" + ref.pick.spot[0].join(",") : "";
+  if (!ref) guideSrc = null;
+  else if (!guideSrc || guideSrc.sig !== sig) guideSrc = {sig, canvas:spotCrop(ref), n:STATE.photos.indexOf(ref) + 1};
+  for (const ph of STATE.photos){
+    if (!ph.guideEl) continue;
+    const show = !!ref && ph !== ref && ph.status === "done";
+    ph.guideEl.hidden = !show;
+    if (!show || ph.guideEl.dataset.sig === sig) continue;
+    ph.guideEl.dataset.sig = sig; ph.guideEl.innerHTML = "";
+    const c = el("canvas", {"aria-label":"Close-up of the spot tapped in photo " + guideSrc.n});
+    c.width = guideSrc.canvas.width; c.height = guideSrc.canvas.height; c.getContext("2d").drawImage(guideSrc.canvas, 0, 0);
+    ph.guideEl.appendChild(c);
+    ph.guideEl.appendChild(el("div", {}, [el("b", {text:"Tap this same spot"}), el("br"),
+      "The spot tapped in photo " + guideSrc.n + ", outlined in yellow. The result is its average over the photos."]));
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -971,13 +1021,13 @@ function csvFor(readings){
   const head = ["Site","Barn","Room","Row","Crates from front of room","Note","Cross-section loss band","Worst spot width loss %",
                 "Photos averaged","Each photo's worst spot %","Spread between photos %",
                 "Readings at worst spot","Worst bar overall width loss %","Worst spot photo","Typical width loss %",
-                "Windows measured","Windows total","Photos","Baseline ratio","Saved","Worst spot photo tilt across bars (deg)",
+                "Windows measured","Windows total","Photos","Baseline ratio","Saved","Saved by","Worst spot photo tilt across bars (deg)",
                 "Bar spacing in photo (px)"];
   const worstPhoto = r => r.photos.find(q => q.pick && q.name === r.worstSpotPhoto) || r.photos.find(q => q.pick) || {};
   const rows = readings.map(r => { const w = worstPhoto(r); return [r.site, r.barn, r.room, r.row, r.crate || r.side, r.note, BAND_TEXT[r.band],
     pct1(r.worstSpot), r.spotsAveraged || 1, (r.spotLosses || [r.worstSpot]).map(pct1).join("; "), pct1(r.spotSpread),
     r.worstSpotN, pct1(r.worstBar), r.worstSpotPhoto, pct1(r.typical), r.used, r.total,
-    r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString(),
+    r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString(), r.by || "",
     w.tilt ? Math.round(w.tilt.across) : "", w.pitchPx ? Math.round(w.pitchPx) : ""]; });
   return "﻿" + [head, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
 }
@@ -994,7 +1044,8 @@ function exportCSV(){
  * ------------------------------------------------------------------ */
 const SYNC = {busy:false, error:null, last:null, note:""};
 const unsynced = () => STATE.readings.filter(r => r.files && !r.synced).length;
-const syncWork = () => unsynced() || TribarSync.pendingCsv();     // readings to upload, or a site summary still to rebuild
+// readings to upload, a site summary still to rebuild, or backed-up readings still missing who saved them
+const syncWork = () => unsynced() || TribarSync.pendingCsv() || (TribarSync.signedIn() && STATE.readings.some(r => r.synced && !r.by));
 // the location as it goes in a Dropbox file name: "Farrowing 2 Room 3 Row 2 Crate 5"
 const fileLabel = r => [r.barn, r.room && "Room " + r.room, r.row && "Row " + r.row, r.crate && "Crate " + r.crate].filter(Boolean).join(" ") || "No location";
 function renderSync(){
@@ -1319,7 +1370,7 @@ function route(){
   if (m) VIEW.site = decodeURIComponent(m[1]);
   for (const v of ["dash", "site", "measure"]) $("#" + v + "View").hidden = VIEW.name !== v;
   showSite();
-  if (VIEW.name === "measure") renderCrumbs(); else redrawTeamViews();
+  if (VIEW.name === "measure"){ renderCrumbs(); try{ fillSiteList(); }catch(e){ console.error(e); } } else redrawTeamViews();
   if (was !== VIEW.name || VIEW.name === "site") window.scrollTo(0, 0);
   if (VIEW.name !== "measure") refreshTeam(false);
 }
@@ -1342,8 +1393,16 @@ async function refreshTeam(force){
   catch(e){ TEAM.error = e.code === "offline" ? null : e.message; }
   TEAM.busy = false; redrawTeamViews();
 }
+// The Site field suggests the sites already in the team folder and on this iPad, so people pick the existing name
+function fillSiteList(){
+  const list = $("#siteList"), names = allSites().map(s => s.name).sort(natural);
+  if (list.dataset.names === names.join("\n")) return;
+  list.dataset.names = names.join("\n"); list.innerHTML = "";
+  for (const n of names) list.appendChild(el("option", {value:n}));
+}
 function redrawTeamViews(){
   try{
+    fillSiteList();
     renderSync();
     if (VIEW.name === "dash") renderDash();
     else if (VIEW.name === "site") renderSitePage();
@@ -1358,7 +1417,7 @@ function redrawTeamViews(){
 // Every reading the app knows of: the team folder's, and this iPad's (backed up or not), once each
 function allReadings(){
   const out = new Map(), idx = TEAM.index;
-  if (idx) for (const e of Object.values(idx.readings)) out.set(e.r.id, {r:e.r, key:e.key, dir:e.dir, team:true, local:null});
+  if (idx) for (const e of Object.values(idx.readings)) out.set(e.r.id, {r:e.r, key:TribarSync.siteKey(e.r.site || e.dir.split("/").pop()), dir:e.dir, team:true, local:null});
   for (const r of STATE.readings){
     const was = out.get(r.id);
     out.set(r.id, {r, key:TribarSync.siteKey(r.site), dir:was ? was.dir : null, team:!!was, local:r});
@@ -1369,11 +1428,14 @@ const worstBand = list => list.reduce((w, e) => BANDS.indexOf(e.r.band) > BANDS.
 const waiting = e => e.local && !e.local.synced;
 function allSites(){
   const sites = new Map(), idx = TEAM.index;
-  if (idx) for (const [key, s] of Object.entries(idx.sites)) sites.set(key, Object.assign({key, readings:[]}, s));
+  // a site's folder in Dropbox gives its name; "C-44", "c 44" and "C044" all land under it (one key, see sync.js)
+  if (idx) for (const f of Object.values(idx.sites).sort((a, b) => natural(a.name, b.name))){
+    const key = TribarSync.siteKey(f.name);
+    if (!sites.has(key)) sites.set(key, Object.assign({}, f, {key, readings:[]}));
+  }
   for (const e of allReadings()){
     let s = sites.get(e.key);
-    if (!s){ s = {key:e.key, name:e.r.site || "No site", status:"current", readings:[]}; sites.set(e.key, s); }
-    if (e.local && e.r.site) s.name = e.r.site;              // the name as typed rather than as a folder name
+    if (!s){ s = {key:e.key, name:e.r.site || "No site", status:"current", readings:[]}; sites.set(e.key, s); }   // not in Dropbox yet: as typed
     s.readings.push(e);
   }
   for (const s of sites.values()){
@@ -1435,7 +1497,7 @@ function renderDash(){
     return;
   }
   // sites in progress first, newest reading first; completed sites after
-  list.sort((a, b) => ((a.status === "past") - (b.status === "past")) || String(b.last).localeCompare(String(a.last)));
+  list.sort((a, b) => ((a.status === "past") - (b.status === "past")) || natural(a.name, b.name));    // C9, C10, C44, C100
   const tb = el("tbody");
   for (const s of list){
     tb.appendChild(el("tr", {class:"go" + (s.status === "past" ? " past" : ""), onclick:() => go(siteHash(s.name))}, [
@@ -1502,7 +1564,7 @@ function renderSitePage(){
   box.appendChild(el("table", {class:"dtable"}, [el("thead", {}, [el("tr", {}, ["Location", "Loss", "Worst spot", "That bar", "Saved", "Backup", ""].map(h => el("th", {text:h})))]), tb]));
 }
 function newReadingAt(site){
-  if (site && STATE.loc.site !== site){                     // another site: its own barns and rooms
+  if (site && TribarSync.siteKey(STATE.loc.site) !== TribarSync.siteKey(site)){      // another site: its own barns and rooms
     Object.assign(STATE.loc, {site, barn:"", room:"", row:"", crate:"", note:""});
     for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
     persist(); renderResult();
@@ -1564,7 +1626,7 @@ const LOC_FIELDS = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate
 // This page and sync.js have to come from the same release. For a few minutes after an update a browser can pair
 // the new page with its cached copy of the old sync.js (GitHub Pages lets browsers keep files for 10 minutes), which
 // leaves the dashboard blank. If they don't match, fetch the app's files fresh and reload, once.
-const SYNC_VERSION = 2;
+const SYNC_VERSION = 3;
 function scriptsMatch(){
   if (window.TribarSync && TribarSync.VERSION === SYNC_VERSION){ try{ sessionStorage.removeItem("tribar.refetched"); }catch(e){} return true; }
   let tried = true;

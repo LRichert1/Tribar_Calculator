@@ -237,7 +237,6 @@ async function signOut() { await getAuth().signOut(); acct = null; client = null
 /* ---------------- what goes where ---------------- */
 const safe = s => String(s || "").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "-").replace(/\s+/g, " ").trim().replace(/[. ]+$/, "");
 const BASE = "/" + CONFIG.folder;
-const siteFolder = r => BASE + "/" + (safe(r.site) || "No site");
 const stem = (r, label) => safe((r.savedAt || "").slice(0, 10) + " " + label + " " + r.id);
 const idOfJson = name => (/ ([a-z0-9]+)\.json$/i.exec(name) || [])[1];
 // What goes up as the reading's JSON: the reading without the device's own bookkeeping
@@ -248,7 +247,24 @@ const record = r => {
   return x;
 };
 const STATUS_FILE = "Site status.json";
-const siteKey = site => (safe(site) || "No site").toLowerCase();
+// One key for a site however it's typed: "C-44", "C44", "C044", "c 44" and "C 044" are all "C44". Case is ignored,
+// spaces, hyphens, underscores and periods are dropped, and so are leading zeros in each group of digits. Letters
+// stay as they are, so "Peddler Creek Pork" is still its own site. Used wherever sites are grouped or matched.
+const siteKey = site => String(site || "").toUpperCase().replace(/[\s\-_.]+/g, "").replace(/\d+/g, d => d.replace(/^0+(?=\d)/, "")) || "NOSITE";
+// The site folders already in the team folder, by key. A reading goes to the existing folder for its site
+// ("c 44" into "C044"), so a new spelling never starts a second folder. Read once per sync.
+let folderMap = null;
+async function siteFolders() {
+  const m = new Map();
+  const dirs = (await client.list(BASE)).filter(e => e[".tag"] === "folder").map(e => e.name).sort();
+  for (const name of dirs) if (!m.has(siteKey(name))) m.set(siteKey(name), name);
+  return (folderMap = m);
+}
+function folderFor(map, site) {
+  const key = siteKey(site);
+  if (!map.has(key)) map.set(key, safe(site) || "No site");      // a new site: the name as typed
+  return map.get(key);
+}
 
 // Site folders whose CSV still has to be rebuilt; kept on the device so a rebuild that fails is retried next time.
 const pending = () => jget(CSV_PENDING, []);
@@ -263,9 +279,12 @@ function markCsv(dir, site, on) {
 // `hooks` = {label, csv, persist, progress}. Returns {done, left, error}.
 let running = null;
 function syncAll(readings, hooks) { return running || (running = doSync(readings, hooks).finally(() => { running = null; })); }
+// Readings already backed up without who saved them (saved before "by" existed, or while the account wasn't
+// loaded): their JSON goes up again with the signed-in name, once.
+const missingBy = readings => readings.filter(r => r.synced && !r.by);
 async function doSync(readings, hooks) {
   const todo = readings.filter(r => !r.synced).reverse();
-  if (!todo.length && !pending().length) return {done: 0, left: 0};
+  if (!todo.length && !pending().length && !missingBy(readings).length) return {done: 0, left: 0};
   if (!getAuth().signedIn()) return {done: 0, left: todo.length, error: null};
   if (typeof navigator !== "undefined" && navigator.onLine === false) return {done: 0, left: todo.length, error: null};
   let done = 0;
@@ -276,8 +295,9 @@ async function doSync(readings, hooks) {
       if (!client) throw new SyncError("offline", "Can’t read your Dropbox account yet. Will try again.");
     }
     await client.ensureFolder();
+    const folders = await siteFolders();
     for (const r of todo) {
-      const dir = siteFolder(r), name = stem(r, hooks.label(r));
+      const site = folderFor(folders, r.site), dir = BASE + "/" + site, name = stem(r, hooks.label(r));
       for (const f of r.files || []) {
         if (f.uploaded || f.lost) continue;
         hooks.progress && hooks.progress("Uploading reading " + (done + 1) + " of " + todo.length);
@@ -288,10 +308,16 @@ async function doSync(readings, hooks) {
         if (f.kind === "original") await IDB.del(f.key).catch(() => {});   // keep the marked-up photo on the device for sharing, not the original
         hooks.persist();
       }
-      markCsv(dir, r.site, true);
-      if (!r.by && acct && acct.name) r.by = acct.name;     // saved signed out: say who backed it up
+      markCsv(dir, site, true);
+      if (!r.by && acct && acct.name) r.by = acct.name;     // saved signed out, or before the account loaded
       await client.upload(dir + "/" + name + ".json", new Blob([JSON.stringify(record(r), null, 1)], {type: "application/json"}));
       r.synced = new Date().toISOString(); hooks.persist(); done++;
+    }
+    if (acct && acct.name) for (const r of missingBy(readings)) {
+      const site = folderFor(folders, r.site), dir = BASE + "/" + site;
+      r.by = acct.name;
+      await client.upload(dir + "/" + stem(r, hooks.label(r)) + ".json", new Blob([JSON.stringify(record(r), null, 1)], {type: "application/json"}));
+      markCsv(dir, site, true); hooks.persist();
     }
     for (const p of pending()) {
       hooks.progress && hooks.progress("Updating the " + (p.site || "No site") + " summary");
@@ -349,7 +375,7 @@ async function buildIndex(local) {
   for (const e of await client.list(BASE, true)) {
     if (!e.path_lower || !e.path_lower.startsWith(baseLower)) continue;
     const rel = e.path_display.slice(BASE.length + 1).split("/");
-    const key = rel[0].toLowerCase(), dir = BASE + "/" + rel[0];
+    const key = siteKey(rel[0]), dir = BASE + "/" + rel[0];
     if (!next.sites[key]) next.sites[key] = {name: rel[0], dir, status: "current"};
     if (e[".tag"] !== "file" || rel.length !== 2 || !/\.json$/i.test(e.name)) continue;
     if (e.name === STATUS_FILE) { statusFiles.push({key, e}); continue; }
@@ -381,7 +407,7 @@ async function buildIndex(local) {
 async function setSiteStatus(site, status) {
   if (!client) { await init(); if (!client) throw new SyncError("auth", "Sign in to Dropbox first."); }
   await client.ensureFolder();
-  const dir = BASE + "/" + (safe(site) || "No site");
+  const dir = BASE + "/" + folderFor(await siteFolders(), site);
   await client.upload(dir + "/" + STATUS_FILE, new Blob([JSON.stringify({status, at: new Date().toISOString(), by: acct && acct.name || ""}, null, 1)], {type: "application/json"}));
 }
 // A file from the team folder (e.g. a marked-up photo another iPad uploaded)
@@ -392,7 +418,7 @@ async function teamFile(dir, name) {
 
 // Bump with any change index.html depends on: the page checks it, and fetches both files fresh if they don't match
 // (a browser can pair a new page with a cached copy of the old sync.js for a few minutes after an update).
-const VERSION = 2;
+const VERSION = 3;
 root.TribarSync = {VERSION, CONFIG, IDB, init, signIn, signOut, syncAll, redirectUri, SyncError, createDropboxAuth, createDropboxFiles,
   teamIndex, cachedIndex, setSiteStatus, teamFile, compact, siteKey, folderName: site => safe(site) || "No site",
   dropboxUrl: site => "https://www.dropbox.com/home/" + (CONFIG.folder + "/" + (safe(site) || "No site")).split("/").map(encodeURIComponent).join("/"),
