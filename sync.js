@@ -390,7 +390,10 @@ async function teamFile(dir, name) {
   return client.downloadBlob(dir + "/" + name);
 }
 
-root.TribarSync = {CONFIG, IDB, init, signIn, signOut, syncAll, redirectUri, SyncError, createDropboxAuth, createDropboxFiles,
+// Bump with any change index.html depends on: the page checks it, and fetches both files fresh if they don't match
+// (a browser can pair a new page with a cached copy of the old sync.js for a few minutes after an update).
+const VERSION = 2;
+root.TribarSync = {VERSION, CONFIG, IDB, init, signIn, signOut, syncAll, redirectUri, SyncError, createDropboxAuth, createDropboxFiles,
   teamIndex, cachedIndex, setSiteStatus, teamFile, compact, siteKey, folderName: site => safe(site) || "No site",
   dropboxUrl: site => "https://www.dropbox.com/home/" + (CONFIG.folder + "/" + (safe(site) || "No site")).split("/").map(encodeURIComponent).join("/"),
   signedIn: () => getAuth().signedIn(), account: () => acct, pendingCsv: () => pending().length};
