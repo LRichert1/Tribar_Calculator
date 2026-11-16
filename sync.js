@@ -11,7 +11,12 @@
    rebuilt from every reading JSON in that folder (so two iPads never
    overwrite each other's rows).
 
-   Sign-in and the Dropbox calls are the Ventilation app's
+   Dropbox app: "JEG Tribar Calculator" (its own app, not Ventilation's):
+   Scoped access, Full Dropbox (an App-folder app can't reach the team
+   folder), the four scopes below, public clients (PKCE) allowed, and both
+   addresses the app is served from as redirect URIs.
+
+   The sign-in and Dropbox code is the Ventilation app's
    (johnsonenggrp/ventilation, index.html): createDropboxAuth below is a copy
    of it, and createDropboxFiles is the request/error/base-folder core of its
    createDropboxClient. Fix a bug in one, port the fix to the other. The team
@@ -23,7 +28,7 @@
 "use strict";
 
 const CONFIG = {
-  appKey: "5n2wm6eobl2dvg8",
+  appKey: "7foui8a0tu6za74",           // JEG Tribar Calculator
   folder: "Johnson Engineering Group/Technical/0000 JEG/Tribar Readings",
   scopes: ["account_info.read", "files.metadata.read", "files.content.read", "files.content.write"],
   // Tribar and Ventilation share one origin (johnsonenggrp.github.io), so they share localStorage: keep the keys apart

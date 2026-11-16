@@ -65,7 +65,7 @@ function fakeDropbox({baseExists = true} = {}) {
         if (p.grant_type === "authorization_code") {
           const a = D.authorize.find(x => "CODE" + (D.authorize.indexOf(x) + 1) === p.code);
           const challenge = crypto.createHash("sha256").update(p.code_verifier || "").digest("base64url");
-          if (!a || a.code_challenge !== challenge || a.redirect_uri !== p.redirect_uri || p.client_id !== "5n2wm6eobl2dvg8")
+          if (!a || a.code_challenge !== challenge || a.redirect_uri !== p.redirect_uri || p.client_id !== "7foui8a0tu6za74")
             return json(route, 400, {error: "invalid_grant", error_description: "bad code, verifier or redirect_uri"});
         } else if (p.grant_type !== "refresh_token" || p.refresh_token !== "RT") return json(route, 400, {error: "invalid_grant"});
         return json(route, 200, {access_token: "AT" + (++D.issued), refresh_token: p.grant_type === "authorization_code" ? "RT" : undefined, expires_in: 14400, account_id: "dbid:test"});
@@ -215,7 +215,7 @@ async function main() {
   await page.waitForFunction(() => /all readings backed up/.test(document.querySelector("#syncMsg").textContent), null, {timeout: 30000});
   const auth = D.authorize[0];
   ok(auth.redirect_uri === APP && auth.code_challenge_method === "S256" && auth.token_access_type === "offline" &&
-     auth.scope === "account_info.read files.metadata.read files.content.read files.content.write" && auth.client_id === "5n2wm6eobl2dvg8",
+     auth.scope === "account_info.read files.metadata.read files.content.read files.content.write" && auth.client_id === "7foui8a0tu6za74",
      "authorize: PKCE S256, offline, the four scopes, redirect " + auth.redirect_uri);
   ok(D.tokenCalls[0] && D.tokenCalls[0].grant_type === "authorization_code", "code exchanged with the PKCE verifier");
   ok(!/code=/.test(page.url()), "code removed from the address bar");
