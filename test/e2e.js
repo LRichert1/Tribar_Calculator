@@ -128,6 +128,7 @@ function fakeDropbox({baseExists = true} = {}) {
 /* ---------------- helpers ---------------- */
 const waitIdle = page => page.waitForFunction(() => STATE.photos.length && STATE.photos.every(p => p.status === "done" || p.status === "error"), null, {timeout: 120000});
 async function addPhotos(page, ...names) {
+  await page.evaluate(() => { document.querySelector("#pickInput").value = ""; });       // choosing the same file again must still add it
   await page.setInputFiles("#pickInput", names.map(n => path.join(PHOTOS, n)));
   await waitIdle(page);
 }
@@ -485,7 +486,9 @@ async function main() {
        "opened at " + other + "index.html: redirect URI " + D3.authorize[0].redirect_uri + ", signed in");
     await p3.waitForFunction(() => STATE.readings[0].by, null, {timeout: 15000}).catch(() => {});
     const nb = D3.files.get((BASE + "/c44/2026-11-16 farrowing Room 15 Row 2 Crate 1 nobyby01.json").toLowerCase());
-    ok(nb && JSON.parse(nb.body).by === "Test Inspector", "a reading backed up without who saved it is re-uploaded with the signed-in name, once" + (nb ? "" : " — files: " + [...D3.files.values()].map(f => f.path.slice(BASE.length)).join(" | ")));
+    ok(nb && JSON.parse(nb.body).by === "Test Inspector", "a reading backed up without who saved it is re-uploaded with the signed-in name, once" + (nb ? "" : " — files: " + [...D3.files.values()].map(f => f.path.slice(BASE.length)).join(" | ") +
+       " — page: " + await p3.evaluate(() => JSON.stringify({err: SYNC.error, busy: SYNC.busy, by: STATE.readings[0].by, signedIn: TribarSync.signedIn(), acct: !!TribarSync.account(), msg: document.querySelector("#syncMsg").textContent})) +
+       " — calls: " + D3.log.map(l => l.endpoint).join(",")));
     await c3.close();
   }
 
@@ -687,6 +690,145 @@ async function main() {
     ok(msgs.length === nd && /No signal/.test(await E.pg.textContent("#toast")) && paths().some(n => n.startsWith("Keep Farm/")), "Delete site with no signal: refused, nothing asked, nothing deleted");
     ok(![A, B, E].some(x => x.pg.errs.length), "no page errors" + [A, B, E].map(x => x.pg.errs.join("; ")).join(""));
     await E.c.close(); await A.c.close();
+  }
+
+  /* ---- the highest-reading hint, and Edit spots on a saved reading ---- */
+  {
+    const D9 = fakeDropbox(), ESITE = "Edit Farm", EDIR = BASE + "/" + ESITE + "/";
+    const legacy = {id: "leg00001", savedAt: "2026-10-02T15:00:00.000Z", site: "Legacy Farm", barn: "B", room: "1", row: "1", crate: "1", band: "10-20%", worstSpot: 0.15, by: "Other Inspector",
+                    photos: [{name: "a.jpg", pick: {loss: 0.15}}], files: [{kind: "marked", suffix: "marked 1.jpg", uploaded: true, dropboxName: "2026-10-02 B Room 1 Row 1 Crate 1 leg00001 marked 1.jpg"}]};
+    D9.put(BASE + "/Legacy Farm/2026-10-02 B Room 1 Row 1 Crate 1 leg00001.json", JSON.stringify(legacy));
+    const oldLocal = Object.assign({}, legacy, {id: "old00001", site: "Old Farm", synced: "2026-10-02T16:00:00Z"});     // saved before originals were kept
+    const mkPad = async readings => {
+      const c = await browser.newContext({serviceWorkers: "block", viewport: {width: 1100, height: 900}}); await D9.install(c);
+      await c.addInitScript(rs => {
+        localStorage.setItem("tribar.dbx.tokens", JSON.stringify({access: "AT1", refresh: "RT", expiresAt: Date.now() + 3600e3}));
+        localStorage.setItem("tribar.dbx.account", JSON.stringify({name: "Test Inspector", rootNamespaceId: "7777"}));
+        if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: rs}));
+      }, readings);
+      const pg = await c.newPage(); pg.errs = []; pg.on("pageerror", e => pg.errs.push(e.message)); return {c, pg};
+    };
+    const settled = pg => pg.waitForFunction(() => !SYNC.busy && !SYNC.again && !TEAM.busy && TEAM.loaded && !TribarSync.pendingCsv() && !STATE.readings.some(r => r.files && !r.synced), null, {timeout: 30000});
+    const toastText = pg => pg.textContent("#toast");
+    const jsonsOf = id => [...D9.files.values()].filter(f => f.path.startsWith(EDIR) && f.path.endsWith(id + ".json"));
+    const filesOf = id => [...D9.files.values()].filter(f => f.path.startsWith(EDIR) && f.path.includes(" " + id)).map(f => { const rest = f.path.slice(f.path.indexOf(id) + id.length).trim(); return rest === ".json" ? "json" : rest; }).sort();
+    const spots = pg => pg.evaluate(() => STATE.photos.map(p => { const k = p.pick; return k && {loss: k.loss, bar: k.bar.loss, n: k.n, x: Math.round(k.spot[k.spot.length >> 1][1]), y0: Math.round(k.spot[0][0]), y1: Math.round(k.spot[k.spot.length - 1][0])}; }));
+    const sameSpot = (a, b) => a && b && near(a.loss, b.loss) && near(a.bar, b.bar) && a.n === b.n && a.x === b.x && a.y0 === b.y0 && a.y1 === b.y1;
+
+    const X = await mkPad([oldLocal]);
+    await X.pg.goto(APP + "#/measure"); await settled(X.pg);
+    for (const [id, v] of [["#fSite", ESITE], ["#fBarn", "Barn 7"], ["#fRoom", "4"], ["#fRow", "2"], ["#fCrate", "6"]]) await X.pg.fill(id, v);
+    await addPhotos(X.pg, "spot-1.jpg");
+    if (SHOTS) await X.pg.locator(".photo").first().screenshot({path: path.join(SHOTS, "hot.png")});
+
+    /* the highest-reading hint */
+    { const h = await X.pg.evaluate(() => { const ph = STATE.photos[0], r = ph.result, hot = hotWindow(r);
+        const losses = r.windows.filter(w => w.ok).map(w => 1 - w.ratio / Tribar.BASELINE_RATIO);
+        return {hot, max: Math.max(...losses), n: ph.stage.querySelectorAll(".win.hot").length, shown: [...ph.stage.querySelectorAll(".hotLbl")].filter(l => !l.hidden).map(l => l.textContent),
+                outline: getComputedStyle(ph.stage.querySelector(".win.hot")).outlineColor, bands: Object.values(BAND_COLORS), pick: ph.pick, result: document.querySelector("#resultCard").innerText}; });
+      ok(h.hot && near(h.hot.loss, h.max) && h.n === 1 && h.shown.length === 1 && h.shown[0] === "Highest reading here: " + (100 * h.max).toFixed(1) + "%", "one window is outlined and labeled: " + h.shown.join());
+      ok(h.outline === "rgb(192, 38, 211)" && h.bands.every(c => c.toLowerCase() !== "#c026d3"), "in a colour no loss band uses (" + h.outline + ")");
+      ok(h.pick === null && /Tap the worst spot/.test(h.result), "it's a hint only: no spot is picked for you, the result waits for the tap"); }
+    const e1 = await tap(X.pg, 0);
+    ok(e1 != null && await X.pg.evaluate(() => currentSummary().avg.loss) === e1, "the result is the tapped spot, " + (100 * e1).toFixed(1) + "%, whatever the hint says");
+    { // a tapped spot reading more than 10 points below the highlighted window gets a note
+      const t = await X.pg.evaluate(() => { const ph = STATE.photos[0], hot = hotWindow(ph.result), real = ph.pick.loss, out = {};
+        for (const [k, gap] of [["under", 0.09], ["over", 0.11]]){ ph.pick.loss = hot.loss - gap; photoLine(ph); out[k] = {hidden: ph.hintEl.hidden, text: ph.hintEl.textContent}; }
+        ph.pick.loss = real; photoLine(ph); out.back = ph.hintEl.hidden === (hot.loss - real <= 0.10); out.hotLoss = hot.loss; return out; });
+      ok(t.under.hidden && !t.over.hidden && t.over.text === "There's an area reading " + (100 * t.hotLoss).toFixed(1) + "% in this photo. Check you tapped the worst bar." && t.back,
+         "10 points or less below it: no note; more: \"" + t.over.text + "\""); }
+    await addPhotos(X.pg, "spot-2.jpg"); const e2 = await tap(X.pg, 1);
+    await X.pg.click("#saveBtn");
+    await X.pg.waitForFunction(() => STATE.readings.length === 2 && !STATE.photos.length); await settled(X.pg);
+    const r0 = await X.pg.evaluate(() => STATE.readings.find(r => r.id !== "old00001")), id = r0.id;
+    ok(r0.photos.length === 2 && r0.photos.every(p => p.pick && p.pick.x != null && p.originalSuffix) && r0.files.filter(f => f.kind === "original").length === 2, "saved: 2 photos with their spot positions and originals");
+    ok(await X.pg.evaluate(async () => !(await TribarSync.IDB.get(STATE.readings.find(r => r.id !== "old00001").files.find(f => f.kind === "original").key))), "the originals are gone from the iPad once uploaded");
+    ok(filesOf(id).join() === "json,marked 1.jpg,marked 2.jpg,photo 1.jpg,photo 2.jpg" && jsonsOf(id).length === 1, "and are in Dropbox: " + filesOf(id).join(", "));
+
+    /* a reading saved before originals were kept can't be edited; the button says why */
+    { const b = X.pg.locator("#saved .reading", {hasText: "Old Farm"}).locator("button", {hasText: "Edit spots"});
+      ok(await b.isDisabled() && /original photos/.test(await b.getAttribute("title")) && /No original photos kept/.test(await X.pg.locator("#saved .reading", {hasText: "Old Farm"}).innerText()), "no originals kept: Edit spots is greyed out, and says why"); }
+    ok(await X.pg.locator("#saved .reading", {hasText: ESITE}).locator("button", {hasText: "Edit spots"}).isEnabled(), "a reading with originals can be edited");
+
+    /* no signal and the originals aren't on the iPad: say so */
+    await X.c.setOffline(true);
+    await X.pg.locator("#saved .reading", {hasText: "Crate 6"}).locator("button", {hasText: "Edit spots"}).click();
+    await X.pg.waitForFunction(() => /once there’s signal/.test(document.querySelector("#toast").textContent), null, {timeout: 10000});
+    ok(/The original photos aren’t on this iPad\. They’ll be available once there’s signal\./.test(await toastText(X.pg)) && await X.pg.evaluate(() => !STATE.editing && !STATE.photos.length), "no signal, originals not on the iPad: \"" + await toastText(X.pg) + "\"");
+    /* a reading not backed up yet still has its originals on the iPad: it can be edited with no signal */
+    await X.pg.fill("#fCrate", "7"); await addPhotos(X.pg, "spot-3.jpg"); const e3 = await tap(X.pg, 0); await X.pg.click("#saveBtn");
+    await X.pg.waitForFunction(() => STATE.readings.length === 3 && !STATE.photos.length);
+    const r7 = await X.pg.evaluate(() => STATE.readings.find(r => r.crate === "7"));
+    await X.pg.locator("#saved .reading", {hasText: "Crate 7"}).locator("button", {hasText: "Edit spots"}).click();
+    await X.pg.waitForFunction(() => STATE.editing && STATE.photos.length === 1 && STATE.photos.every(p => p.status === "done"), null, {timeout: 60000});
+    ok(sameSpot((await spots(X.pg))[0], r7.photos[0].pick), "no signal, original on the iPad: the photo is measured again and the old spot is back, " + (100 * e3).toFixed(1) + "%");
+    X.pg.once("dialog", d => d.accept()); await X.pg.click("#editBar >> text=Cancel edit");
+    ok(await X.pg.evaluate(() => !STATE.editing && !STATE.photos.length && !document.querySelector("#fSite").disabled) && await X.pg.evaluate(() => STATE.readings.length) === 3, "Cancel edit leaves the reading as it was");
+    await X.c.setOffline(false); await X.pg.evaluate(() => window.dispatchEvent(new Event("online"))); await settled(X.pg);
+
+    /* edit spots on a backed-up reading: originals from Dropbox, old spots shown, same reading when saved */
+    const before = Object.fromEntries([...D9.files.values()].filter(f => f.path.startsWith(EDIR) && f.path.includes(" " + id)).map(f => [f.path, f.rev]));
+    const dl0 = D9.log.filter(l => l.endpoint === "files/download").length;
+    await X.pg.locator("#saved .reading", {hasText: "Crate 6"}).locator("button", {hasText: "Edit spots"}).click();
+    await X.pg.waitForFunction(() => STATE.editing && STATE.photos.length === 2 && STATE.photos.every(p => p.status === "done"), null, {timeout: 90000});
+    const dls = D9.log.slice(dl0).filter(l => l.endpoint === "files/download").map(l => JSON.parse(l.headers["dropbox-api-arg"]).path);
+    ok(dls.filter(x => / photo [12]\.jpg$/.test(x)).length === 2, "the originals were downloaded from Dropbox: " + dls.map(x => x.slice(-12)).join(", "));
+    { const sp = await spots(X.pg);
+      ok(sameSpot(sp[0], r0.photos[0].pick) && sameSpot(sp[1], r0.photos[1].pick), "re-measured: both old tapped spots are back where they were (" + sp.map(k => k && (100 * k.loss).toFixed(1) + "%").join(", ") + ")"); }
+    if (SHOTS) await X.pg.evaluate(() => window.scrollTo(0, 0)), await X.pg.screenshot({path: path.join(SHOTS, "edit.png")});
+    ok(await X.pg.evaluate(() => document.querySelector("#editBar").innerText.includes("Editing spots") && document.querySelector("#fSite").disabled && /Save changes/.test(document.querySelector("#saveBtn").textContent)) &&
+       await X.pg.evaluate(() => [...document.querySelectorAll(".pickLbl")].filter(l => !l.hidden).length) === 2, "the edit banner is up, the location is locked, both old spots are shown");
+    // clear photo 2's spot (tap it again), tap it somewhere else, and add a third photo
+    await X.pg.evaluate(() => { window.__p = STATE.photos[1].pick.spot[STATE.photos[1].pick.spot.length >> 1]; });
+    { const f = await X.pg.evaluate(() => [__p[1] / STATE.photos[1].result.width, __p[0] / STATE.photos[1].result.height]); await tap(X.pg, 1, f[0], f[1]); }
+    ok(await X.pg.evaluate(() => STATE.photos[1].pick === null), "tapping the old spot again clears it");
+    const nl = await tap(X.pg, 1, 0.25, 0.3);
+    await addPhotos(X.pg, "spot-3.jpg"); await tap(X.pg, 2);
+    await X.pg.click("#saveBtn");
+    await X.pg.waitForFunction(() => !STATE.editing && !STATE.photos.length); await settled(X.pg);
+    ok(await X.pg.evaluate(id => STATE.readings.filter(r => r.id === id).length, id) === 1 && await X.pg.evaluate(() => STATE.readings.length) === 3, "saved: the same reading, still 3 readings on the iPad");
+    const j = JSON.parse(jsonsOf(id)[0].body), edits = j.edits || [];
+    ok(jsonsOf(id).length === 1 && j.id === id && j.savedAt === r0.savedAt && j.photos.length === 3, "Dropbox has one JSON for it (same id, same saved date), now with 3 photos");
+    ok(edits.length === 1 && edits[0].by === "Test Inspector" && Math.abs(Date.parse(edits[0].at) - Date.now()) < 120000 && near(edits[0].was.worstSpot, r0.worstSpot) && edits[0].was.band === r0.band &&
+       edits[0].was.photos.length === 2 && near(edits[0].was.photos[0].loss, r0.photos[0].pick.loss) && near(edits[0].was.photos[1].loss, r0.photos[1].pick.loss) && edits[0].was.photos[0].name === r0.photos[0].name,
+       "edit history: when, who, and the old worst spot " + (100 * r0.worstSpot).toFixed(1) + "%, band " + r0.band + ", and each photo's old value");
+    ok(near(j.photos[0].pick.loss, r0.photos[0].pick.loss) && near(j.photos[1].pick.loss, nl) && j.spotsAveraged === 3, "the new spots are what's measured: photo 2 now " + (100 * nl).toFixed(1) + "%, average of 3");
+    { const after = Object.fromEntries([...D9.files.values()].filter(f => f.path.startsWith(EDIR) && f.path.includes(" " + id)).map(f => [f.path, f.rev]));
+      const changed = k => before[k] !== after[k], keys = Object.keys(after);
+      ok(keys.filter(k => / marked [12]\.jpg$/.test(k)).every(changed) && keys.filter(k => k.endsWith(".json")).every(changed) && keys.filter(k => / photo [12]\.jpg$/.test(k)).every(k => !changed(k)) && keys.length === 3 + 3 + 1,
+         "the JSON and marked-up photos are overwritten, the originals already in Dropbox aren't uploaded again, the third photo's are new: " + filesOf(id).join(", ")); }
+    { const csv = parseCsv(D9.files.get((EDIR + "Tribar readings - " + ESITE + ".csv").toLowerCase()).body.toString()), col = csv[0].indexOf("Edited");
+      const row = csv.find(r => r[0] === ESITE && r[csv[0].indexOf("Crates from front of room")] === "6"), other = csv.find(r => r[csv[0].indexOf("Crates from front of room")] === "7");
+      ok(col > 0 && csv.length === 3 && row && /by Test Inspector \(was \d+\.\d%\)$/.test(row[col]) && other && other[col] === "", "the site CSV was rebuilt: one row per reading, an Edited column filled for the edited one: " + (row && row[col])); }
+    const edited = await X.pg.evaluate(id => ({text: editText(STATE.readings.find(r => r.id === id)), shown: document.querySelector("#saved .reading .edited") && document.querySelector("#saved .reading .edited").innerText}), id);
+    ok(edited.text === "edited " + await X.pg.evaluate(() => stamp(lastEdit(STATE.readings.find(r => r.crate === "6")).at)) + " by Test Inspector, was " + (100 * r0.worstSpot).toFixed(1) + "%" && /^✎ Edited .* by Test Inspector$/.test(edited.shown || ""), "the reading shows Edited with the date: \"" + edited.shown + "\"");
+    { const cap = await X.pg.evaluate(id => { const r = STATE.readings.find(x => x.id === id); return captionSpec({name: "x.jpg", tilt: null, pick: {loss: 0.1, bar: {loss: 0.1}, spot: [[0, 0, 1, 60]]}, result: {windows: []}}, r, 1, 1, 14).map(x => x[0]).join("\n"); }, id);
+      ok(cap.includes(edited.text), "and the marked-up photo's caption says it: …" + cap.split("\n").pop().slice(-70)); }
+    ok(!/edited/.test(await X.pg.evaluate(() => captionSpec({name: "x.jpg", tilt: null, pick: {loss: 0.1, bar: {loss: 0.1}, spot: [[0, 0, 1, 60]]}, result: {windows: []}}, STATE.readings.find(r => r.crate === "7"), 1, 1, 14).map(x => x[0]).join("\n"))), "a reading that wasn't edited has no such line");
+
+    /* the second iPad: a reading it never saw, edited from the site page */
+    const Y = await mkPad([]);
+    await Y.pg.goto(APP + "#/site/" + encodeURIComponent("Legacy Farm")); await settled(Y.pg);
+    { const b = Y.pg.locator("#siteView tbody tr").first().locator("button", {hasText: "Edit spots"});
+      ok(await b.isDisabled() && /No original photos kept/.test(await Y.pg.locator("#siteView tbody tr").first().innerText()), "site page, a reading with no originals kept: greyed out, with the reason"); }
+    await Y.pg.evaluate(site => { location.hash = "#/site/" + encodeURIComponent(site); }, ESITE);
+    await Y.pg.waitForFunction(() => VIEW.name === "site" && document.querySelectorAll("#siteView tbody tr").length === 2);
+    ok(/✎ Edited .* by Test Inspector/.test(await Y.pg.locator("#siteView tbody tr", {hasText: "Crate 6"}).innerText()), "the site page shows Edited on the reading");
+    await Y.pg.locator("#siteView tbody tr", {hasText: "Crate 6"}).locator("button", {hasText: "Edit spots"}).click();
+    await Y.pg.waitForFunction(() => STATE.editing && STATE.photos.length === 3 && STATE.photos.every(p => p.status === "done"), null, {timeout: 120000});
+    { const sp = await spots(Y.pg);
+      ok(sp.every((k, i) => sameSpot(k, j.photos[i].pick)), "another iPad's reading (as edited since): its 3 originals downloaded, the current spots shown (" + sp.map(k => k && (100 * k.loss).toFixed(1) + "%").join(", ") + ")"); }
+    await Y.pg.click(".photo:nth-child(2) button[title='Remove photo']");
+    ok(await Y.pg.evaluate(() => STATE.photos.length) === 2, "a photo can be removed");
+    await Y.pg.click("#saveBtn");
+    await Y.pg.waitForFunction(() => !STATE.editing && VIEW.name === "site" && !SYNC.busy && STATE.readings.length === 1 && STATE.readings[0].synced, null, {timeout: 30000}); await settled(Y.pg);
+    const j2 = JSON.parse(jsonsOf(id)[0].body);
+    ok(jsonsOf(id).length === 1 && await Y.pg.$$eval("#siteView tbody tr", r => r.length) === 2, "still one reading in Dropbox and on the site page");
+    ok(j2.edits.length === 2 && j2.edits[0].by === "Test Inspector" && j2.edits[1].was.photos.length === 3 && near(j2.edits[1].was.worstSpot, j.worstSpot) && j2.photos.length === 2, "the history keeps the first edit and adds this one, with what it was just before (" + j2.edits.length + " edits)");
+    ok(j2.photos.map(p => p.originalSuffix).join() === "photo 1.jpg,photo 3.jpg" && filesOf(id).join() === "json,marked 1.jpg,marked 2.jpg,photo 1.jpg,photo 2.jpg,photo 3.jpg",
+       "marked-up photos match the 2 photos left (the third one's is gone from Dropbox); the originals stay: " + filesOf(id).join(", "));
+    ok(![X, Y].some(x => x.pg.errs.length), "no page errors" + [X, Y].map(x => x.pg.errs.join("; ")).join(""));
+    await X.c.close(); await Y.c.close();
   }
 
   /* ---- a new page with the browser's cached copy of the previous sync.js ---- */

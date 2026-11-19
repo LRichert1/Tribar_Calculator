@@ -97,6 +97,12 @@
   .pickLbl{position:absolute;background:#111;color:#ffd400;font-weight:800;font-size:13px;
            line-height:1.35;padding:2px 7px;border-radius:5px;border:2px solid #ffd400;white-space:nowrap;pointer-events:none}
   .win.dim{background:rgba(15,20,25,.58)}
+  /* the window with the highest loss: a hint of where to look, in a colour no band or the yellow spot uses */
+  .win.hot{outline:3px solid #c026d3;outline-offset:1px;z-index:2}
+  .win .hotLbl{position:absolute;left:0;bottom:0;max-width:100%;background:#c026d3;color:#fff;font-weight:700;font-size:12px;padding:2px 6px;line-height:1.3}
+  .editbar{background:#eef6ff;border-color:#9ec5f0}
+  input.text:disabled{background:#eef1f4;color:#5a6672;cursor:not-allowed}
+  .editbar p{margin:4px 0 10px;font-size:13.5px}
   .win .lbl{position:absolute;left:4px;top:4px;max-width:calc(100% - 8px);color:#fff;background:#9aa5b1;font-weight:700;
             font-size:12.5px;line-height:1.35;padding:1px 6px;border-radius:4px}
   .bar{height:6px;background:var(--brand-50)}
@@ -276,6 +282,7 @@
   <!-- ============ MEASURING ============ -->
   <div id="measureView" hidden>
   <div class="crumbs" id="measureCrumbs"></div>
+  <section class="card editbar" id="editBar" hidden></section>
   <!-- ============ LOCATION ============ -->
   <section class="card">
     <div class="hdr"><h2>Location</h2></div>
@@ -398,6 +405,7 @@ const STATE = {
   photos: [],      // the reading being taken: {id, name, status, msg, progress, result, pick (the tapped worst bar), ...}
   readings: [],    // saved readings, newest first
   marks: true,
+  editing: null,   // {base, dir, from}: a saved reading whose spots are being edited (kept in memory only)
 };
 
 function persist(){
@@ -489,7 +497,8 @@ let queue = Promise.resolve();
 function addFiles(files, extra = {}){
   for (const file of files){
     const ph = {id:uid(), name:file.name || "Photo", status:"queued", msg:"Waiting…", progress:0, pick:null, file,
-                tilt:extra.tilt || null, source:extra.source || "file"};
+                tilt:extra.tilt || null, source:extra.source || "file",
+                restore:extra.restore || null, orig:extra.orig || null};      // editing: the old spot, and this photo's original in the saved reading
     STATE.photos.push(ph);
     queue = queue.then(() => processPhoto(ph));
   }
@@ -505,6 +514,7 @@ async function processPhoto(ph){
     ph.result = await measure(d.gray, d.w, d.h, (p, msg) => { ph.progress = p; ph.msg = msg; showProgress(ph); });
     ph.secs = (performance.now() - t0) / 1000;
     ph.status = "done";
+    if (ph.restore){ ph.pick = restoreSpot(ph, ph.restore); ph.lostSpot = !ph.pick; }       // editing: show the old tapped spot
   }catch(e){
     ph.status = "error"; ph.msg = "Couldn’t measure this photo: " + e.message;
     if (ph.img && ph.img.close) ph.img.close();
@@ -550,7 +560,7 @@ function drawPhoto(ph){
     const [x0, x1, y0, y1] = w.box;
     return el("div", {class:"win",
       style:"left:" + pctPos(x0, r.width) + ";top:" + pctPos(y0, r.height) +
-            ";width:" + pctPos(x1 - x0, r.width) + ";height:" + pctPos(y1 - y0, r.height)}, [el("span", {class:"lbl"})]);
+            ";width:" + pctPos(x1 - x0, r.width) + ";height:" + pctPos(y1 - y0, r.height)}, [el("span", {class:"lbl"}), el("span", {class:"hotLbl", hidden:""})]);
   });
   const pickLbl = el("div", {class:"pickLbl", hidden:""});
   const stage = el("div", {class:"stage", onclick:ev => tapBar(ph, ev)}, [base, widths, ...wins, pickLbl]);
@@ -564,11 +574,14 @@ function drawOverlay(ph){
   const r = ph.result, ctx = ph.widths.getContext("2d");
   ctx.clearRect(0, 0, ph.widths.width, ph.widths.height);
   paintWidths(ctx, ph, ph.scale, STATE.marks);
+  const hot = hotWindow(r);
   r.windows.forEach((w, i) => {
-    const box = ph.wins[i], lbl = box.firstChild, look = windowLook(w);
+    const box = ph.wins[i], lbl = box.firstChild, look = windowLook(w), isHot = !!hot && hot.i === i;
     lbl.textContent = look.text;
-    box.className = "win" + (w.ok ? "" : " dim");
+    box.className = "win" + (w.ok ? "" : " dim") + (isHot ? " hot" : "");
     box.style.borderColor = lbl.style.background = look.color;
+    box.lastChild.hidden = !isHot;
+    if (isHot) box.lastChild.textContent = "Highest reading here: " + pct(hot.loss);
   });
   const p = ph.pick;
   ph.pickLbl.hidden = !p;
@@ -616,6 +629,27 @@ function paintWidths(ctx, ph, s, marks){
 // readings that follow a bar; windows too poor to measure have none.
 const barSamples = ph => ph.result.windows.flatMap(w => w.samples || []);
 
+// A saved reading's tapped spot back on a re-measured photo. The measurement is deterministic, so the straightened
+// photo's coordinates are the saved ones: trace the bar at the saved x, then take the same rows (y0..y1) as before.
+const medianNum = a => { const s = Float64Array.from(a).sort(), n = s.length, h = n >> 1; return n % 2 ? s[h] : (s[h - 1] + s[h]) / 2; };
+function restoreSpot(ph, saved){
+  if (!saved || saved.x == null) return null;
+  const t = Tribar.measureSpot(barSamples(ph), saved.x, (saved.y0 + saved.y1) / 2);
+  if (!t) return null;
+  const spot = t.bar.marks.filter(m => m[0] >= saved.y0 && m[0] <= saved.y1);
+  if (!spot.length) return t;
+  const ratio = medianNum(spot.map(m => m[2] / m[3]));
+  return {n:spot.length, ratio, loss:1 - ratio / Tribar.BASELINE_RATIO, spot, bar:t.bar};
+}
+// The measurable window with the highest loss (by its median, the figure on the window): a hint of where to tap.
+// The result never comes from it, only from where the inspector taps.
+const HOT_GAP = 0.10;      // a tapped spot reading this many points below that window gets a note
+function hotWindow(r){
+  let best = null;
+  r.windows.forEach((w, i) => { if (!w.ok) return; const loss = 1 - w.ratio / Tribar.BASELINE_RATIO; if (!best || loss > best.loss) best = {i, loss}; });
+  return best;
+}
+
 function tapBar(ph, ev){
   const rect = ph.stage.getBoundingClientRect(), r = ph.result;
   const x = (ev.clientX - rect.left) / rect.width * r.width, y = (ev.clientY - rect.top) / rect.height * r.height;
@@ -652,7 +686,11 @@ function photoLine(ph){
              (ph.fullSize ? ", measured at " + (ph.w * ph.h / 1e6).toFixed(1) + " MP" : "") + ")" : "") +
             (px ? ", bars " + Math.round(px) + " px apart" : ""));
   bits.push(ph.secs.toFixed(1) + " s");
+  if (ph.lostSpot && !ph.pick) bits.push("the spot tapped before couldn’t be placed on this photo: tap it again");
   ph.lineEl.textContent = bits.join(" · ");
+  const hot = hotWindow(r), gap = hot && ph.pick ? hot.loss - ph.pick.loss : 0;
+  ph.hintEl.hidden = !(gap > HOT_GAP);
+  if (gap > HOT_GAP){ ph.hintEl.className = "ph-line warnline"; ph.hintEl.textContent = "There's an area reading " + pct(hot.loss) + " in this photo. Check you tapped the worst bar."; }
   for (const [elx, warn] of [[ph.tiltEl, tiltWarning(t)], [ph.resEl, resWarning(ph)]]){
     elx.hidden = !warn;
     if (warn){ elx.className = "ph-line " + (warn.bad ? "badline" : "warnline"); elx.textContent = warn.text; }
@@ -701,6 +739,7 @@ function renderPhotos(){
       card.appendChild(ph.lineEl = el("div", {class:"ph-line"}));
       card.appendChild(ph.tiltEl = el("div", {class:"ph-line", hidden:""}));
       card.appendChild(ph.resEl = el("div", {class:"ph-line", hidden:""}));
+      card.appendChild(ph.hintEl = el("div", {class:"ph-line", hidden:""}));
       photoLine(ph);
     } else if (ph.status === "error"){
       card.appendChild(el("div", {class:"ph-line err", text:ph.msg}));
@@ -832,13 +871,16 @@ function renderResult(){
     stat(typical.n + " of " + total, "Windows measured"),
   ]));
   card.appendChild(el("div", {class:"hdr", style:"margin:0"}, [
-    el("span", {class:"tip", style:"margin:0;flex:1 1 220px", text:"Saves under: " + [STATE.loc.site, locLabel(STATE.loc)].filter(Boolean).join(" · ")}),
-    el("button", {class:"btn", text:"Discard", onclick:discardReading}),
-    el("button", {class:"btn primary", id:"saveBtn", text:"✓ Save reading", disabled: busy ? "" : null, onclick:saveReading}),
+    el("span", {class:"tip", style:"margin:0;flex:1 1 220px", text:STATE.editing
+      ? "Updates the reading saved " + stamp(STATE.editing.base.savedAt) + " (the same reading, not a new one)"
+      : "Saves under: " + [STATE.loc.site, locLabel(STATE.loc)].filter(Boolean).join(" · ")}),
+    el("button", {class:"btn", text:STATE.editing ? "Cancel edit" : "Discard", onclick:discardReading}),
+    el("button", {class:"btn primary", id:"saveBtn", text:STATE.editing ? "✓ Save changes" : "✓ Save reading", disabled: busy ? "" : null, onclick:saveReading}),
   ]));
 }
 
 function discardReading(){
+  if (STATE.editing){ if (confirm("Cancel the edit? The reading stays as it was.")) cancelEdit(); return; }
   if (!confirm("Discard the photos for this reading?")) return;
   STATE.photos = []; renderPhotos(); renderResult();
 }
@@ -849,9 +891,10 @@ async function saveReading(){
   if (!avg || saving) return;
   saving = true; const btn = $("#saveBtn"); if (btn){ btn.disabled = true; btn.textContent = "Saving…"; }
   try{
-    const id = uid(), worst = picked.slice().sort((a, b) => b.pick.loss - a.pick.loss)[0];
+    const ed = STATE.editing, old = ed && ed.base, me = (TribarSync.account() || {}).name || null;
+    const id = old ? old.id : uid(), worst = picked.slice().sort((a, b) => b.pick.loss - a.pick.loss)[0];
     const r = {
-      id, savedAt:new Date().toISOString(), ...STATE.loc, by:(TribarSync.account() || {}).name || null,
+      id, savedAt:old ? old.savedAt : new Date().toISOString(), ...STATE.loc, by:old ? old.by || me : me,
       band:Tribar.grade(avg.loss), worstSpot:avg.loss, worstSpotRatio:avg.ratio, worstSpotN:avg.n, worstBar:avg.bar,
       spotsAveraged:avg.count, spotLosses:picked.map(p => p.pick.loss), spotSpread:avg.spread,
       worstSpotPhoto:worst.name,
@@ -865,38 +908,58 @@ async function saveReading(){
           ratio: v.ratio ?? null, ratio_worst: v.ratio_worst ?? null, n: v.n ?? null}))})),
       files: [], synced: false,
     };
-    // the marked-up photo of every photo with a tapped spot, and every original, kept on the device until backed up
-    let k = 0;
+    // an edit: who, when, and what the reading said before (its worst spot, each photo's value, its band)
+    if (old) r.edits = (old.edits || []).concat([{at:new Date().toISOString(), by:me,
+      was:{worstSpot:old.worstSpot, band:old.band, photos:old.photos.map(p => ({name:p.name, loss:p.pick ? p.pick.loss : null}))}}]);
+    // the marked-up photo of every photo with a tapped spot, and every original, kept on the device until backed up.
+    // An edit keeps the originals already in Dropbox (it only adds the new photos' ones) and replaces the marked-up photos.
+    let k = 0, nextOrig = old ? originalsOf(old).reduce((m, f) => Math.max(m, photoNum(f)), 0) : 0;
+    const marked = new Set();
     for (const p of done){
       k++;
       try{
         if (p.pick){
           const blob = await markedImage(p, r, k, done.length);
-          if (blob){ await TribarSync.IDB.put(id + "/m" + k, blob); r.files.push({key:id + "/m" + k, kind:"marked", photo:p.name, suffix:"marked " + k + ".jpg"}); }
+          if (blob){ await TribarSync.IDB.put(id + "/m" + k, blob); r.files.push({key:id + "/m" + k, kind:"marked", photo:p.name, suffix:"marked " + k + ".jpg"}); marked.add("marked " + k + ".jpg"); }
         }
-        if (p.original){
-          await TribarSync.IDB.put(id + "/o" + k, p.original);
-          r.files.push({key:id + "/o" + k, kind:"original", photo:p.name, suffix:"photo " + k + extOf(p.original)});
+        if (p.orig){                                           // a photo of the reading being edited: its original is already kept
+          r.files.push(Object.assign({}, p.orig, {photo:p.name})); r.photos[k - 1].originalSuffix = p.orig.suffix;
+        } else if (p.original){
+          const n = old ? ++nextOrig : k, suffix = "photo " + n + extOf(p.original);
+          await TribarSync.IDB.put(id + "/o" + n, p.original);
+          r.files.push({key:id + "/o" + n, kind:"original", photo:p.name, suffix});
+          r.photos[k - 1].originalSuffix = suffix;
         }
       }catch(e){ toast("Couldn’t keep a photo on this device: " + (e.message || e)); }
     }
-    STATE.readings.unshift(r);
+    if (old){
+      // marked-up photos of the old reading that aren't part of the new one: gone from Dropbox once the JSON is up
+      const gone = (old.files || []).filter(f => f.kind === "marked" && !marked.has(f.suffix));
+      const names = (old.removeFiles || []).concat(gone.filter(f => f.uploaded && f.dropboxName).map(f => f.dropboxName));
+      if (names.length) r.removeFiles = names;
+      for (const f of (old.files || [])) if (f.key && (f.kind === "marked" ? !marked.has(f.suffix) : !r.files.some(x => x.suffix === f.suffix))) TribarSync.IDB.del(f.key).catch(() => {});
+    }
+    const at = STATE.readings.findIndex(x => x.id === id);
+    if (at >= 0) STATE.readings[at] = r; else STATE.readings.unshift(r);
+    shareCache.delete(id);
     persist();
-    STATE.photos = []; renderPhotos(); renderResult(); renderSaved();
-    toast("Saved " + locLabel(r) + ": " + BAND_TEXT[r.band]);
+    STATE.photos = []; STATE.editing = null; renderEdit(); renderPhotos(); renderResult(); renderSaved();
+    toast((old ? "Updated " : "Saved ") + locLabel(r) + ": " + BAND_TEXT[r.band]);
+    if (old && ed.from && ed.from !== "#/measure" && VIEW.name === "measure") go(ed.from);
     sync();
   } finally { saving = false; }
 }
 const extOf = f => { const m = /\.(jpe?g|png|heic|heif|webp)$/i.exec(f.name || ""); return m ? "." + m[1].toLowerCase() : (f.type === "image/png" ? ".png" : ".jpg"); };
 
-// The straightened photo with its windows, bar widths and tapped spot drawn
-// on, and a caption burned in underneath, for the letter.
-async function markedImage(ph, r, k, of){
-  const base = ph.base, W = base.width, H = base.height, s = ph.scale, res = ph.result;
-  const fs = Math.max(14, Math.round(W / 62)), pad = Math.round(fs * 0.7), FONT = "px system-ui, -apple-system, Segoe UI, Arial, sans-serif";
+// When a reading was edited: "Nov 19, 2026, 10:11 AM"
+const stamp = iso => new Date(iso).toLocaleString([], {year:"numeric", month:"short", day:"numeric", hour:"numeric", minute:"2-digit"});
+const lastEdit = r => (r.edits || []).slice(-1)[0] || null;
+// "edited Nov 19, 2026, 10:11 AM by Name, was 12.3%" (the latest edit; what the worst spot read before it)
+const editText = r => { const e = lastEdit(r); return e ? "edited " + stamp(e.at) + (e.by ? " by " + e.by : "") + ", was " + pct(e.was.worstSpot) : null; };
+// The marked-up photo's caption: [text, font weight, size, colour], each wrapped to the photo's width
+function captionSpec(ph, r, k, of, fs){
   const t = tiltOf(ph), px = pitchPx(ph);
-  // the caption: [text, font weight, size, colour], each wrapped to the photo's width
-  const spec = [
+  return [
     [[r.site, locLabel(r), r.note].filter(Boolean).join(" · "), 700, fs, "#1f2933"],
     ["Cross-section loss " + BAND_TEXT[r.band] + " · worst spot width loss " + pct(r.worstSpot) +
       (r.spotsAveraged > 1 ? ", average of " + r.spotsAveraged + " photos (" + r.spotLosses.map(pct).join(", ") + "; spread " + pts(r.spotSpread) + ")"
@@ -905,8 +968,16 @@ async function markedImage(ph, r, k, of){
       " · blue = new bar width, red = measured", 400, fs, "#1f2933"],
     [[new Date(r.savedAt).toLocaleString([], {year:"numeric", month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}),
       t ? "tilt " + Math.round(t.across) + "° across the bars, " + Math.round(t.along) + "° along (" + (t.source === "sensor" ? "tilt sensor" : "estimated") + ")" : null,
-      px ? "bars " + Math.round(px) + " px apart" : null, "Johnson Engineering Group"].filter(Boolean).join(" · "), 400, Math.round(fs * 0.85), "#4a5560"],
+      px ? "bars " + Math.round(px) + " px apart" : null, "Johnson Engineering Group", editText(r)].filter(Boolean).join(" · "), 400, Math.round(fs * 0.85), "#4a5560"],
   ];
+}
+
+// The straightened photo with its windows, bar widths and tapped spot drawn
+// on, and a caption burned in underneath, for the letter.
+async function markedImage(ph, r, k, of){
+  const base = ph.base, W = base.width, H = base.height, s = ph.scale, res = ph.result;
+  const fs = Math.max(14, Math.round(W / 62)), pad = Math.round(fs * 0.7), FONT = "px system-ui, -apple-system, Segoe UI, Arial, sans-serif";
+  const spec = captionSpec(ph, r, k, of, fs);
   const measure = el("canvas").getContext("2d"), caption = [];
   for (const [text, weight, size, color] of spec){
     measure.font = weight + " " + size + FONT;
@@ -956,6 +1027,84 @@ function wrapText(ctx, text, maxW){
 }
 
 /* ------------------------------------------------------------------ *
+ *  Edit spots: a saved reading's original photos are measured again and
+ *  opened on the measuring page with the old tapped spots shown. Saving
+ *  updates the same reading (same id, same files in Dropbox) and keeps what
+ *  it said before in r.edits.
+ * ------------------------------------------------------------------ */
+const photoNum = f => +((/^photo (\d+)/.exec(f.suffix || "") || [])[1]) || 0;
+const originalsOf = r => (r.files || []).filter(f => f.kind === "original");
+// the original of the reading's i-th photo (photos saved since editing existed say which file; before that it's "photo <n>")
+const originalOf = (r, i) => { const suf = (r.photos[i] || {}).originalSuffix; return originalsOf(r).find(f => !f.lost && (suf ? f.suffix === suf : photoNum(f) === i + 1)); };
+// Readings saved before the originals were kept have none, and can't be measured again
+const canEditSpots = r => !!(r.photos && r.photos.length) && r.photos.every((p, i) => originalOf(r, i));
+function editButton(e){
+  const r = e.local || e.r, can = canEditSpots(r), why = "Saved before the original photos were kept, so its spots can’t be edited.";
+  return [el("button", {class:"btn sm", title:can ? "Edit the tapped spots" : why, text:"✎ Edit spots", disabled:can ? null : "", onclick:() => editSpots(e)}),
+          can ? null : el("span", {class:"small", text:"No original photos kept"})];
+}
+// The edit banner and the location locked while editing (the reading's files are named from it)
+function renderEdit(){
+  const bar = $("#editBar"), ed = STATE.editing;
+  bar.hidden = !ed; bar.innerHTML = "";
+  for (const id of Object.keys(LOC_FIELDS)) $("#" + id).disabled = !!ed;
+  if (!ed) return;
+  const r = ed.base;
+  bar.appendChild(el("div", {class:"hdr"}, [el("h2", {text:"Editing spots"}), el("button", {class:"btn", text:"Cancel edit", onclick:discardReading})]));
+  bar.appendChild(el("p", {text:"The reading for " + locLabel(r) + " at " + (r.site || "No site") + ", saved " + stamp(r.savedAt) + (r.by ? " by " + r.by : "") +
+    ". Clear and tap the spots again, add or remove photos, then Save changes. It updates this reading; it doesn’t make a new one. The location can’t be changed here."}));
+}
+function cancelEdit(){
+  STATE.editing = null; STATE.photos = []; renderEdit(); renderPhotos(); renderResult();
+}
+let editLoading = false;
+async function editSpots(e){
+  const r0 = e.local || e.r;
+  if (!canEditSpots(r0)) return toast("This reading was saved before the original photos were kept, so its spots can’t be edited.");
+  if (editLoading) return;
+  if (STATE.photos.length && !confirm((STATE.editing ? "You’re already editing a reading. " : "") + "The photos on the measuring page are discarded to edit this reading. Go on?")) return;
+  editLoading = true;
+  try{
+    const online = TribarSync.signedIn() && navigator.onLine !== false;
+    const later = "The original photos aren’t on this iPad. They’ll be available once there’s signal.";
+    // The reading as it is now. One not backed up yet exists only here. A backed-up one: Dropbox has the latest copy
+    // (another iPad may have edited it), and the full one (the dashboard's copy leaves out where the spots are).
+    let base = e.local && !e.local.synced ? e.local : null, dir = e.dir || null;
+    if (!base && online){
+      toast("Loading the reading…");
+      try{ const got = await TribarSync.fetchReading(dir, r0); base = got.r; dir = got.dir; }
+      catch(err){ if (!e.local) return toast("Couldn’t load the reading from Dropbox: " + err.message); }
+    }
+    if (!base && e.local) base = e.local;
+    if (!base || (base.photos || []).some(p => p.pick && p.pick.x == null)) return toast("This reading is in Dropbox. Its spots will be available to edit once there’s signal.");
+    if (!canEditSpots(base)) return toast("This reading was saved before the original photos were kept, so its spots can’t be edited.");
+    // the originals: on this iPad if still there, otherwise from Dropbox
+    const blobs = [];
+    for (let i = 0; i < base.photos.length; i++){
+      const f = originalOf(base, i); let blob = null;
+      if (f.key) blob = await TribarSync.IDB.get(f.key).catch(() => null);
+      if (!blob && f.dropboxName){
+        if (!online) return toast(later);
+        toast("Downloading photo " + (i + 1) + " of " + base.photos.length + "…");
+        try{ dir = dir || await TribarSync.readingDir(base.site); blob = await TribarSync.teamFile(dir, f.dropboxName); }
+        catch(err){ return toast(err.code === "offline" ? later : "Couldn’t download the original photo: " + err.message); }
+      }
+      if (!blob) return toast(online ? "The original of photo " + (i + 1) + " isn’t on this iPad or in Dropbox." : later);
+      blobs.push(blob);
+    }
+    for (const p of STATE.photos) if (p.img && p.img.close) p.img.close();
+    STATE.photos = []; STATE.editing = {base, dir, from:location.hash || "#/"};
+    Object.assign(STATE.loc, {site:base.site || "", barn:base.barn || "", room:base.room || "", row:base.row || "", crate:base.crate || "", note:base.note || ""});
+    for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
+    persist(); renderEdit();
+    base.photos.forEach((p, i) => addFiles([new File([blobs[i]], p.name || "Photo " + (i + 1), {type:blobs[i].type || "image/jpeg"})],
+      {tilt:p.tilt && p.tilt.source === "sensor" ? p.tilt : null, source:p.source || "file", restore:p.pick, orig:originalOf(base, i)}));
+    $("#toast").classList.remove("show");
+    go("#/measure");
+  } finally { editLoading = false; }
+}
+
+/* ------------------------------------------------------------------ *
  *  Saved readings
  * ------------------------------------------------------------------ */
 function renderSaved(){
@@ -977,11 +1126,13 @@ function renderSaved(){
           r.photos.length + (r.photos.length === 1 ? " photo" : " photos"),
           new Date(r.savedAt).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}),
           r.note].filter(Boolean).join(" · ")}),
+        lastEdit(r) ? el("div", {class:"meta edited", text:"✎ Edited " + fmtDay(lastEdit(r).at) + (lastEdit(r).by ? " by " + lastEdit(r).by : "")}) : null,
       ]),
       el("div", {class:"acts"}, [
         r.files ? el("span", {class:"cloud" + (r.synced ? "" : " wait"), title:r.synced ? "Backed up to Dropbox" : "Not backed up yet",
                               text:r.synced ? "☁ Backed up" : "⏳ Not backed up"}) : null,
         marked.length ? el("button", {class:"btn sm", title:"Share the marked-up photo", text:"🖼 Share", onclick:() => shareMarked(r)}) : null,
+        ...editButton({r, local:r, team:!!r.synced, dir:null}),
         el("button", {class:"btn sm ghost", title:"Delete reading", text:"🗑", onclick:() => {
           if (!confirm("Delete the reading for " + locLabel(r) + "?" + (r.files && !r.synced ? " It hasn’t been backed up to Dropbox." : ""))) return;
           for (const f of r.files || []) TribarSync.IDB.del(f.key).catch(() => {});
@@ -1023,13 +1174,14 @@ function csvFor(readings){
   const head = ["Site","Barn","Room","Row","Crates from front of room","Note","Cross-section loss band","Worst spot width loss %",
                 "Photos averaged","Each photo's worst spot %","Spread between photos %",
                 "Readings at worst spot","Worst bar overall width loss %","Worst spot photo","Typical width loss %",
-                "Windows measured","Windows total","Photos","Baseline ratio","Saved","Saved by","Worst spot photo tilt across bars (deg)",
+                "Windows measured","Windows total","Photos","Baseline ratio","Saved","Saved by","Edited","Worst spot photo tilt across bars (deg)",
                 "Bar spacing in photo (px)"];
   const worstPhoto = r => r.photos.find(q => q.pick && q.name === r.worstSpotPhoto) || r.photos.find(q => q.pick) || {};
   const rows = readings.map(r => { const w = worstPhoto(r); return [r.site, r.barn, r.room, r.row, r.crate || r.side, r.note, BAND_TEXT[r.band],
     pct1(r.worstSpot), r.spotsAveraged || 1, (r.spotLosses || [r.worstSpot]).map(pct1).join("; "), pct1(r.spotSpread),
     r.worstSpotN, pct1(r.worstBar), r.worstSpotPhoto, pct1(r.typical), r.used, r.total,
     r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString(), r.by || "",
+    (r.edits || []).map(e => stamp(e.at) + (e.by ? " by " + e.by : "") + " (was " + pct(e.was.worstSpot) + ")").join("; "),
     w.tilt ? Math.round(w.tilt.across) : "", w.pitchPx ? Math.round(w.pitchPx) : ""]; });
   return "﻿" + [head, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
 }
@@ -1562,14 +1714,16 @@ function renderSitePage(){
       td("Worst spot", [r.worstSpot != null ? pct(r.worstSpot) : "—",
         r.spotsAveraged > 1 ? el("span", {class:"small", text:"avg of " + r.spotsAveraged + ", spread " + pts(r.spotSpread)}) : el("span", {class:"small", text:"1 photo"})]),
       td("That bar", [r.worstBar != null ? pct(r.worstBar) : "—"]),
-      td("Saved", [el("span", {class:"nowrap", text:fmtDay(r.savedAt)}), r.by ? el("span", {class:"small", text:r.by}) : null]),
+      td("Saved", [el("span", {class:"nowrap", text:fmtDay(r.savedAt)}), r.by ? el("span", {class:"small", text:r.by}) : null,
+        lastEdit(r) ? el("span", {class:"small edited", text:"✎ Edited " + fmtDay(lastEdit(r).at) + (lastEdit(r).by ? " by " + lastEdit(r).by : "")}) : null]),
       td("Backup", [waiting(e) ? el("span", {class:"pill wait", text:"⏳ This iPad only"}) : el("span", {class:"pill ok", text:"☁ Backed up"})]),
-      td("", [marked.length ? el("button", {class:"btn sm", text:"🖼 Photo" + (marked.length > 1 ? "s" : ""), onclick:() => openPhotos(e)}) : null], "acts"),
+      td("", [marked.length ? el("button", {class:"btn sm", text:"🖼 Photo" + (marked.length > 1 ? "s" : ""), onclick:() => openPhotos(e)}) : null, ...editButton(e)], "acts"),
     ]));
   }
   box.appendChild(el("table", {class:"dtable"}, [el("thead", {}, [el("tr", {}, ["Location", "Loss", "Worst spot", "That bar", "Saved", "Backup", ""].map(h => el("th", {text:h})))]), tb]));
 }
 function newReadingAt(site){
+  if (STATE.editing){ toast("You’re editing a reading. Save or cancel the edit first."); return go("#/measure"); }
   if (site && TribarSync.siteKey(STATE.loc.site) !== TribarSync.siteKey(site)){      // another site: its own barns and rooms
     Object.assign(STATE.loc, {site, barn:"", room:"", row:"", crate:"", note:""});
     for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
@@ -1580,6 +1734,7 @@ function newReadingAt(site){
 // "+ New reading" on the dashboard means a new site: a blank location. (A reading of an existing site starts from that
 // site's page, + New reading here.) A reading already under way, with photos taken, is left as it is.
 function newSite(){
+  if (STATE.editing){ toast("You’re editing a reading. Save or cancel the edit first."); return go("#/measure"); }
   if (!STATE.photos.length){
     Object.assign(STATE.loc, {site:"", barn:"", room:"", row:"", crate:"", note:""});
     for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
@@ -1690,7 +1845,7 @@ const LOC_FIELDS = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate
 // This page and sync.js have to come from the same release. For a few minutes after an update a browser can pair
 // the new page with its cached copy of the old sync.js (GitHub Pages lets browsers keep files for 10 minutes), which
 // leaves the dashboard blank. If they don't match, fetch the app's files fresh and reload, once.
-const SYNC_VERSION = 4;
+const SYNC_VERSION = 5;
 function scriptsMatch(){
   if (window.TribarSync && TribarSync.VERSION === SYNC_VERSION){ try{ sessionStorage.removeItem("tribar.refetched"); }catch(e){} return true; }
   let tried = true;
@@ -1750,7 +1905,7 @@ function init(){
   $("#lbShare").addEventListener("click", sharePhoto);
   document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#lightbox").hidden) closePhotos(); });
   window.addEventListener("hashchange", route);
-  renderPhotos(); renderResult(); renderSaved();
+  renderPhotos(); renderResult(); renderSaved(); renderEdit();
   if (TribarSync.loadDeleted) TribarSync.loadDeleted().then(() => { announceRemoved(TribarSync.purge(STATE.readings)); redrawTeamViews(); }).catch(() => {});
   try{ route(); }catch(e){ console.error(e); }               // a page that can't draw mustn't stop Dropbox starting
   TribarSync.init().catch(e => ({error:e.message})).then(({error}) => {
