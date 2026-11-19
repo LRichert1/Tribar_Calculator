@@ -43,6 +43,12 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
+  // A photo sheet the page has built: its PDF is in the "photo-sheets" cache under an address that ends in its file name
+  if (/\/photo-sheet\//.test(new URL(req.url).pathname)) {
+    e.respondWith(caches.open("photo-sheets").then((c) => c.match(req.url)).then((hit) =>
+      hit || new Response("This photo sheet isn't available any more. Build it again from the site page.", { status: 404 })));
+    return;
+  }
   const isDoc = req.mode === "navigate" || (req.headers.get("accept") || "").includes("text/html");
   const isScript = /\.js(\?|$)/.test(new URL(req.url).pathname);
   if (isDoc || isScript) {
