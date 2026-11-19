@@ -254,7 +254,7 @@ const stem = (r, label) => safe((r.savedAt || "").slice(0, 10) + " " + label + "
 const idOfJson = name => (/ ([a-z0-9]+)\.json$/i.exec(name) || [])[1];
 // What goes up as the reading's JSON: the reading without the device's own bookkeeping
 const record = r => {
-  const x = Object.assign({}, r); delete x.synced;
+  const x = Object.assign({}, r); delete x.synced; delete x.removeFiles;
   x.files = (r.files || []).map(f => { const g = Object.assign({}, f); delete g.key; return g; });
   if (!x.by && acct && acct.name) x.by = acct.name;      // who saved it, for the dashboard (readings saved signed out)
   return x;
@@ -333,6 +333,9 @@ async function doSync(readings, hooks) {
       markCsv(dir, site, true);
       if (!r.by && acct && acct.name) r.by = acct.name;     // saved signed out, or before the account loaded
       await client.upload(dir + "/" + name + ".json", new Blob([JSON.stringify(record(r), null, 1)], {type: "application/json"}));
+      // an edit that dropped photos: their marked-up copies are no longer part of the reading (restorable from Dropbox's deleted files)
+      for (const n of r.removeFiles || []) await client.remove(dir + "/" + n);
+      delete r.removeFiles;
       r.synced = new Date().toISOString(); hooks.persist(); done++;
     }
     if (acct && acct.name) for (const r of missingBy(readings)) {
@@ -507,7 +510,7 @@ const INDEX_KEY = "team-index";
 function compact(r) {
   const x = Object.assign({}, r);
   x.photos = (r.photos || []).map(p => ({name: p.name, tilt: p.tilt || null, pitchPx: p.pitchPx || null, size: p.size || null,
-                                         source: p.source || null, pick: p.pick ? {loss: p.pick.loss} : null}));
+                                         source: p.source || null, originalSuffix: p.originalSuffix || null, pick: p.pick ? {loss: p.pick.loss} : null}));
   x.files = (r.files || []).map(f => ({kind: f.kind, suffix: f.suffix, dropboxName: f.dropboxName || null, uploaded: !!f.uploaded, lost: !!f.lost}));
   delete x.synced;
   return x;
@@ -576,6 +579,17 @@ async function setSiteStatus(site, status) {
   const dir = BASE + "/" + folderFor(await siteFolders(), site);
   await client.upload(dir + "/" + STATUS_FILE, new Blob([JSON.stringify({status, at: new Date().toISOString(), by: acct && acct.name || ""}, null, 1)], {type: "application/json"}));
 }
+// The folder a site's readings are in (the existing one for its key)
+async function readingDir(site) { await ensureClient(); return BASE + "/" + folderFor(await siteFolders(), site); }
+// A reading's full JSON as it is in the team folder now (the dashboard's copy leaves out the tapped spots' positions, and
+// another iPad may have edited it since). Returns {r, dir}.
+async function fetchReading(dir, r) {
+  await ensureClient(); await client.ensureFolder();
+  dir = dir || await readingDir(r.site);
+  const f = (await client.listOrNull(dir) || []).find(x => x[".tag"] === "file" && idOfJson(x.name) === r.id);
+  if (!f) throw new SyncError("missing", "That reading isn’t in the team folder.");
+  return {r: JSON.parse(await client.download(f.path_lower)), dir};
+}
 // A file from the team folder (e.g. a marked-up photo another iPad uploaded)
 async function teamFile(dir, name) {
   if (!client) { await init(); if (!client) throw new SyncError("auth", "Sign in to Dropbox first."); }
@@ -584,9 +598,9 @@ async function teamFile(dir, name) {
 
 // Bump with any change index.html depends on: the page checks it, and fetches both files fresh if they don't match
 // (a browser can pair a new page with a cached copy of the old sync.js for a few minutes after an update).
-const VERSION = 4;
+const VERSION = 5;
 root.TribarSync = {VERSION, CONFIG, IDB, init, signIn, signOut, syncAll, redirectUri, SyncError, createDropboxAuth, createDropboxFiles,
-  teamIndex, cachedIndex, setSiteStatus, teamFile, compact, siteKey, deleteSite, loadDeleted, purge, isDeleted, siteDeleted: key => !!del.sites[key], removeLocal, folderName: site => safe(site) || "No site",
+  teamIndex, cachedIndex, setSiteStatus, teamFile, fetchReading, readingDir, compact, siteKey, deleteSite, loadDeleted, purge, isDeleted, siteDeleted: key => !!del.sites[key], removeLocal, folderName: site => safe(site) || "No site",
   dropboxUrl: site => "https://www.dropbox.com/home/" + (CONFIG.folder + "/" + (safe(site) || "No site")).split("/").map(encodeURIComponent).join("/"),
   signedIn: () => getAuth().signedIn(), account: () => acct, pendingCsv: () => pending().length, pendingDeletes: () => queue().length};
 })(typeof self !== "undefined" ? self : globalThis);
