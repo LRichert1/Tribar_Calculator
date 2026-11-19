@@ -221,7 +221,7 @@ async function main() {
   await page.click("#newReadingBtn");
   await page.waitForFunction(() => VIEW.name === "measure");
   ok(await page.isVisible("#measureView") && page.url().endsWith("#/measure"), "+ New reading opens the measuring page");
-  ok(!await page.isVisible("#saved") && !await page.isVisible("#csvBtn") && !/Saved on this iPad/.test(await page.innerText("#measureView")), "the measuring page has no Saved on this iPad section");
+  ok(!await page.isVisible("#saved") && !await page.isVisible("#csvBtn") && !/Saved on this device/.test(await page.innerText("#measureView")), "the measuring page has no Saved on this device section");
 
   /* ---- averaging ---- */
   for (const [id, v] of [["#fSite", SITE], ["#fBarn", "Farrowing 2"], ["#fRoom", "3"], ["#fRow", "2"], ["#fCrate", "5"]]) await page.fill(id, v);
@@ -271,8 +271,8 @@ async function main() {
   ok(r1.spotsAveraged === 3 && near(r1.worstSpot, mean) && r1.spotLosses.length === 3 && near(r1.spotSpread, spread), "saved reading keeps the average, each photo and the spread");
   ok(r1.files.filter(f => f.kind === "marked").length === 3 && r1.files.filter(f => f.kind === "original").length === 3, "3 marked-up photos and 3 originals kept on the device");
   await savedPage(page);
-  ok(!r1.synced && /Not backed up/.test(await page.textContent(".reading .cloud")), "saved reading shows Not backed up (on the Saved on this iPad page)");
-  ok(/^Saved on this iPad/.test(await page.innerText("#savedView h2")) && await page.isVisible("#csvBtn") && await page.isVisible("#clearBtn"), "that page has Export CSV and Clear all");
+  ok(!r1.synced && /Not backed up/.test(await page.textContent(".reading .cloud")), "saved reading shows Not backed up (on the Saved on this device page)");
+  ok(/^Saved on this device/.test(await page.innerText("#savedView h2")) && await page.isVisible("#csvBtn") && await page.isVisible("#clearBtn"), "that page has Export CSV and Clear all");
   const stored = await page.evaluate(() => localStorage.getItem("tribar.v1"));
   ok(!/data:image|base64/.test(stored) && stored.length < 40000, "no photos in localStorage (" + stored.length + " bytes for 2 readings)");
   ok(await page.evaluate(async () => { const b = await TribarSync.IDB.get(STATE.readings[0].files[0].key); return b && b.size > 50000 && b.type === "image/jpeg"; }), "marked-up photo readable back from IndexedDB");
@@ -291,7 +291,7 @@ async function main() {
   /* ---- sign in (from the dashboard) ---- */
   await page.click("#savedView .crumbs >> text=‹ Dashboard");
   await page.waitForFunction(() => VIEW.name === "dash");
-  ok(/^Saved on this iPad \(2\)$/.test(await page.textContent("#savedLink")), "the dashboard links to it, with the count: " + await page.textContent("#savedLink"));
+  ok(/^Saved on this device \(2\)$/.test(await page.textContent("#savedLink")), "the dashboard links to it, with the count: " + await page.textContent("#savedLink"));
   await Promise.all([page.waitForURL(u => /code=/.test(u)), page.click("#signInBtn")]);
   await page.waitForFunction(() => /all readings backed up/.test(document.querySelector("#syncMsg").textContent), null, {timeout: 30000});
   const auth = D.authorize[0];
@@ -661,7 +661,7 @@ async function main() {
     await A.pg.waitForFunction(() => /isn’t the site name/.test(document.querySelector("#toast").textContent), null, {timeout: 15000});
     ok(seen && seen.type === "prompt" && /C044/.test(seen.msg) && /3 readings and 4 photos/.test(seen.msg) && /deleted files, where it can be restored/.test(seen.msg) && /Type the site name/.test(seen.msg),
        "Delete site asks for the name and says what goes (" + (seen && seen.msg.replace(/\n+/g, " ").slice(0, 150)) + ")");
-    ok(/1 reading on this iPad hasn’t been backed up, so it is kept and will upload again/.test(seen.msg), "and says the reading that was never backed up is kept");
+    ok(/1 reading on this device hasn’t been backed up, so it is kept and will upload again/.test(seen.msg), "and says the reading that was never backed up is kept");
     ok(paths().some(n => n.startsWith("C044/")) && !tomb() && D8.deleted.length === 0, "a name that doesn't match deletes nothing");
     D8.denyDelete = true; A.answer = "C044"; await A.pg.click("#siteView >> text=Delete site");
     await A.pg.waitForFunction(() => /Couldn’t delete C044/.test(document.querySelector("#toast").textContent), null, {timeout: 15000});
@@ -690,7 +690,7 @@ async function main() {
     ok(paths().some(n => /^C-44\/.*mineB001\.json$/.test(n)) && paths().some(n => /^C-44\/.*mineB001 marked 1\.jpg$/.test(n)) && paths().some(n => /^Keep Farm\/.*mineB003\.json$/.test(n)),
        "B's readings that were never uploaded do upload, the C044 one into the site's new folder: " + paths().filter(n => /mineB/.test(n)).join(" | "));
     ok(await B.pg.evaluate(() => STATE.readings.map(r => r.id).sort().join()) === "mineB001,mineB003", "B: the backed-up copy is gone from the iPad, the others stay");
-    { const m = await B.pg.textContent("#syncMsg"); ok(/Removed from this iPad because the team deleted the site: 1 backed-up reading at C044 \(deleted by Test Inspector/.test(m), "B says what was removed and why: " + (m.match(/Removed[^)]*\)/) || [""])[0]); }
+    { const m = await B.pg.textContent("#syncMsg"); ok(/Removed from this device because the team deleted the site: 1 backed-up reading at C044 \(deleted by Test Inspector/.test(m), "B says what was removed and why: " + (m.match(/Removed[^)]*\)/) || [""])[0]); }
     ok((await dashRows(B.pg)).map(r => r.join(" ")).join(",") === "C-44 2,Keep Farm 3", "B's dashboard has no C044: " + (await dashRows(B.pg)).map(r => r.join(" ")).join(", "));
     await B.c.setOffline(true); await B.pg.evaluate(() => { TEAM.index = null; TEAM.loaded = false; return refreshTeam(false); });
     ok((await dashSites(B.pg)).join(",") === "C-44,Keep Farm" && await B.pg.evaluate(async () => !Object.values((await TribarSync.cachedIndex()).readings).some(e => /C044/.test(e.dir))),
@@ -792,7 +792,7 @@ async function main() {
     await X.c.setOffline(true);
     await X.pg.locator("#saved .reading", {hasText: "Crate 6"}).locator("button", {hasText: "Edit spots"}).click();
     await X.pg.waitForFunction(() => /once there’s signal/.test(document.querySelector("#toast").textContent), null, {timeout: 10000});
-    ok(/The original photos aren’t on this iPad\. They’ll be available once there’s signal\./.test(await toastText(X.pg)) && await X.pg.evaluate(() => !STATE.editing && !STATE.photos.length), "no signal, originals not on the iPad: \"" + await toastText(X.pg) + "\"");
+    ok(/The original photos aren’t on this device\. They’ll be available once there’s signal\./.test(await toastText(X.pg)) && await X.pg.evaluate(() => !STATE.editing && !STATE.photos.length), "no signal, originals not on the iPad: \"" + await toastText(X.pg) + "\"");
     /* a reading not backed up yet still has its originals on the iPad: it can be edited with no signal */
     await measurePage(X.pg); await X.pg.fill("#fCrate", "7"); await tapThree(X.pg); await X.pg.click("#saveBtn");
     await X.pg.waitForFunction(() => STATE.readings.length === 3 && !STATE.photos.length);
@@ -1027,11 +1027,16 @@ async function main() {
       const pg = await c.newPage(); pg.errs = []; pg.on("pageerror", e => pg.errs.push(e.message)); return {c, pg};
     };
     const settled = pg => pg.waitForFunction(() => !SYNC.busy && !SYNC.again && !TEAM.busy && TEAM.loaded && !TribarSync.pendingCsv() && !STATE.readings.some(r => r.files && !r.synced), null, {timeout: 30000});
+    // The sheet opens in a new tab. A stand-in for window.open records it (headless Chromium has no PDF viewer to look at),
+    // and the PDF is read back from the blob address the tab was sent to.
+    const standIn = pg => pg.evaluate(() => { window.__opened = []; window.open = (url, target) => { const w = {closed: false, url, target, location: {href: ""}, document: {title: "", body: {textContent: ""}}, close() { this.closed = true; }}; __opened.push(w); return w; }; });
     const sheet = async (pg, all) => {
-      await pg.evaluate(() => { window.__names = []; if (!window.__wrapped) { window.__wrapped = true; const orig = downloadBlob; downloadBlob = (n, b) => { __names.push(n); orig(n, b); }; } });
+      await standIn(pg);
       await pg.evaluate(all => { document.querySelector("#sheetAll").checked = all; VIEW.sheetAll = all; }, !!all);
-      const [dl] = await Promise.all([pg.waitForEvent("download"), pg.click("#sheetBtn")]);
-      return {buf: fs.readFileSync(await dl.path()), names: await pg.evaluate(() => __names)};
+      await pg.click("#sheetBtn");
+      await pg.waitForFunction(() => __opened.length && /^blob:/.test(__opened[0].location.href), null, {timeout: 60000});
+      const b64 = await pg.evaluate(async () => { const blob = await (await fetch(__opened[0].location.href)).blob(); return new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(blob); }); });
+      return {buf: Buffer.from(b64, "base64"), opened: await pg.evaluate(() => __opened.map(w => ({url: w.url, target: w.target, closed: w.closed, title: w.document.title})))};
     };
     const S1 = await mkPad(), p1 = S1.pg;
     await p1.goto(APP + "#/measure"); await settled(p1);
@@ -1052,7 +1057,7 @@ async function main() {
     ok(a.images.join() === [sha["far-off.jpg"], sha["spot-1.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"], sha["low-red.jpg"]].join(), "each reading's photo is the one with its worst tapped spot");
     ok(headings(a).length === 5 && order.every((o, i) => headings(a)[i].startsWith(o)), "in walking order (barn, room, row, side): " + headings(a).map(t => t.slice(0, 34)).join(" | "));
     ok(a.text[0] === "Tribar corrosion photos" && /^Sheet Farm · Nov 2 – Nov 17, 2026 · 5 readings$/.test(a.text[1]), "the title has the site and the dates: " + a.text.slice(0, 2).join(" / "));
-    ok(r1.names.length === 1 && /^Tribar photo sheet - Sheet Farm - \d{4}-\d\d-\d\d\.pdf$/.test(r1.names[0]), "shared or downloaded like the CSV: " + r1.names[0]);
+    ok(r1.opened.length === 1 && r1.opened[0].target === "_blank" && r1.opened[0].url === "" && !r1.opened[0].closed, "the PDF opens in a new tab straight from the tap, not in a share dialog (one tab opened, kept open)");
     ok(D11.log.slice(dl0).filter(l => l.endpoint === "files/download").map(l => JSON.parse(l.headers["dropbox-api-arg"]).path).filter(x => /shE marked 1\.jpg$/.test(x)).length === 1, "the other iPad's photo came from Dropbox, this iPad's from the iPad");
     /* all photos */
     r1 = await sheet(p1, true); a = pdfAnalyze(r1.buf);
@@ -1062,7 +1067,7 @@ async function main() {
     /* no signal: this iPad's readings still work; the one only in Dropbox is left out, and the PDF says so */
     await S1.c.setOffline(true);
     r1 = await sheet(p1, false); a = pdfAnalyze(r1.buf);
-    ok(a.valid && a.pages === 2 && a.images.join() === [sha["far-off.jpg"], sha["spot-1.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"]].join() && /^1 reading left out: its marked-up photo isn’t on this iPad and there is no signal to download it\.$/.test(a.text.slice(2, a.text.findIndex(t => /Barn \d/.test(t))).join(" ")),
+    ok(a.valid && a.pages === 2 && a.images.join() === [sha["far-off.jpg"], sha["spot-1.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"]].join() && /^1 reading left out: its marked-up photo isn’t on this device and there is no signal to download it\.$/.test(a.text.slice(2, a.text.findIndex(t => /Barn \d/.test(t))).join(" ")),
        "no signal: the 4 readings on the iPad are in it, the 5th is left out and the PDF says why" + " — " + JSON.stringify({valid: a.valid, pages: a.pages, images: a.images.map(h => Object.keys(sha).find(k => sha[k] === h)), text: a.text.slice(0, 4)}));
     ok(!S1.pg.errs.length, "no page errors" + S1.pg.errs.join("; "));
     await S1.c.close();
@@ -1074,8 +1079,15 @@ async function main() {
     ok(a.valid && a.images.join() === [sha["far-off.jpg"], sha["spot-1.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"], sha["low-red.jpg"]].join(), "another iPad: all the photos downloaded from Dropbox");
     await S2.c.setOffline(true);
     await p2.evaluate(() => { document.querySelector("#sheetAll").checked = false; });
+    await standIn(p2);
     await p2.click("#sheetBtn"); await p2.waitForFunction(() => /No marked-up photos/.test(document.querySelector("#toast").textContent), null, {timeout: 20000});
-    ok(/only the photos on this iPad can be used/.test(await p2.textContent("#toast")), "no signal and no photos on the iPad: it says so instead of making an empty PDF");
+    ok(await p2.evaluate(() => __opened.length === 1 && __opened[0].closed), "and the tab it opened is closed again when there's nothing to show");
+    ok(/only the photos on this device can be used/.test(await p2.textContent("#toast")), "no signal and no photos on the iPad: it says so instead of making an empty PDF");
+    await S2.c.setOffline(false);
+    await p2.evaluate(() => { window.open = () => null; });                                        // popups blocked
+    { const [dl] = await Promise.all([p2.waitForEvent("download"), p2.click("#sheetBtn")]);
+      const buf = fs.readFileSync(await dl.path());
+      ok(pdfAnalyze(buf).valid && pdfAnalyze(buf).images.length === 5, "a browser that blocks the new tab gets the PDF as a download instead"); }
     ok(!S2.pg.errs.length, "no page errors" + S2.pg.errs.join("; "));
     await S2.c.close();
   }

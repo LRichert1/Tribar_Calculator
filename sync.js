@@ -439,7 +439,7 @@ async function addDeleted(site) {
     del = {sites: cur.sites, rev: null};      // our own write: read it back (and its version) next time
     await keepDeleted(); return;
   }
-  throw new SyncError("server", "Couldn’t update “" + DELETED_FILE + "”: another iPad kept changing it. Try again.");
+  throw new SyncError("server", "Couldn’t update “" + DELETED_FILE + "”: another device kept changing it. Try again.");
 }
 // Take readings off this device with their photos; returns them
 function removeLocal(readings, pred) {
