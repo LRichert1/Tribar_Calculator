@@ -14,7 +14,8 @@
    every JSON in the site folder (including another iPad's), token refresh
    after a 401, offline then online, a missing base folder, the marked-up
    photo, Share, the in-app camera's size label, the [hidden] fix, the
-   offline cache, and the phone-width layout. */
+   offline cache, the phone-width layout, and deleting a site or a reading
+   with two iPads (the deleted list that stops the other iPad bringing it back). */
 "use strict";
 const http = require("http"), fs = require("fs"), path = require("path"), crypto = require("crypto");
 const { chromium } = require("playwright");
@@ -39,7 +40,7 @@ const server = http.createServer((req, res) => {
 
 /* ---------------- fake Dropbox ---------------- */
 function fakeDropbox({baseExists = true} = {}) {
-  const D = {files: new Map(), folders: new Set(), log: [], authorize: [], tokenCalls: [], expired: new Set(), issued: 0};
+  const D = {files: new Map(), folders: new Set(), log: [], authorize: [], tokenCalls: [], expired: new Set(), issued: 0, deleted: []};
   const low = p => p.toLowerCase();
   const addFolder = p => { const parts = p.split("/").filter(Boolean); for (let i = 1; i <= parts.length; i++) D.folders.add(low("/" + parts.slice(0, i).join("/"))); };
   if (baseExists) addFolder(BASE);
@@ -82,9 +83,24 @@ function fakeDropbox({baseExists = true} = {}) {
       const team = h["dropbox-api-path-root"] === JSON.stringify({".tag": "root", root: "7777"});
       const arg = u.host.startsWith("content") ? JSON.parse(h["dropbox-api-arg"]) : JSON.parse(req.postData() || "null");
       const p = arg && arg.path;
-      if (endpoint === "files/get_metadata") return team && (D.folders.has(low(p)) || D.files.has(low(p))) ? json(route, 200, {".tag": "folder", name: p.split("/").pop(), path_lower: low(p)}) : notFound(route);
+      if (endpoint === "files/get_metadata") {
+        if (team && D.files.has(low(p))) { const f = D.files.get(low(p)); return json(route, 200, {".tag": "file", name: f.path.split("/").pop(), path_lower: low(p), path_display: f.path, rev: f.rev}); }
+        return team && D.folders.has(low(p)) ? json(route, 200, {".tag": "folder", name: p.split("/").pop(), path_lower: low(p)}) : notFound(route);
+      }
+      if (endpoint === "files/delete_v2") {
+        if (!team || D.denyDelete) return json(route, 403, {error_summary: "path_lookup/no_permission/.."});
+        const isFolder = D.folders.has(low(p)), isFile = D.files.has(low(p));
+        if (!isFolder && !isFile) return notFound(route);
+        D.deleted.push(p);
+        if (isFile) D.files.delete(low(p));
+        else { for (const k of [...D.files.keys()]) if (k.startsWith(low(p) + "/")) D.files.delete(k); for (const f of [...D.folders]) if (f === low(p) || f.startsWith(low(p) + "/")) D.folders.delete(f); }
+        return json(route, 200, {metadata: {name: p.split("/").pop(), path_lower: low(p)}});
+      }
       if (endpoint === "files/upload") {
         if (!team) return json(route, 403, {error_summary: "path/no_write_permission/.."});
+        if (D.onUpload) { const hook = D.onUpload; D.onUpload = null; hook(p); }          // another iPad writing just before this one lands
+        const was = D.files.get(low(p)), mode = arg.mode && arg.mode[".tag"];
+        if ((mode === "add" && was) || (mode === "update" && (!was || was.rev !== arg.mode.update))) return json(route, 409, {error_summary: "path/conflict/file/.."});
         D.put(p, req.postDataBuffer() || Buffer.alloc(0));
         return json(route, 200, {name: p.split("/").pop(), path_lower: low(p), path_display: p, rev: D.files.get(low(p)).rev});
       }
@@ -294,7 +310,7 @@ async function main() {
   const downloads = () => D.log.filter(l => l.endpoint === "files/download").length;
   const dl0 = downloads();
   await page.click("#syncBtn");
-  await page.waitForFunction(() => !TEAM.busy && Date.now() - TEAM.index.at < 3000);
+  await page.waitForFunction(() => !TEAM.busy && !SYNC.busy && Date.now() - TEAM.index.at < 3000);
   ok(downloads() === dl0, "Sync now re-reads the team folder without downloading readings it already has");
   ok(/Team folder checked/.test(await page.textContent("#syncMsg")), "sync bar says when the team folder was checked");
   await page.fill("#dashSearch", "old");
@@ -536,6 +552,152 @@ async function main() {
     ok(opts.join(",") === "C9,C10,C044,C100" && (await p7.getAttribute("#fSite", "list")) === "siteList", "the Site field suggests each site once: " + opts.join(", "));
     ok(!errs7.length, "no page errors" + (errs7.length ? ": " + errs7.join("; ") : ""));
     await c7.close();
+  }
+
+  /* ---- deleting a site or a reading, with two iPads ---- */
+  {
+    const D8 = fakeDropbox(), LISTF = BASE + "/Deleted sites.json";
+    const rd = (id, site, day, extra = {}) => Object.assign({id, savedAt: "2026-11-" + day + "T15:00:00.000Z", site, barn: "B", room: "1", row: "1", crate: "1", band: "10-20%",
+      worstSpot: 0.15, by: "Other Inspector", photos: [{name: id + ".jpg", pick: {loss: 0.15}}], files: []}, extra);
+    const nameOf = r => BASE + "/" + r.dir + "/" + r.savedAt.slice(0, 10) + " B Room 1 Row 1 Crate 1 " + r.id;
+    // put a reading in Dropbox: its JSON, a marked-up and an original photo
+    const putReading = (dir, r) => { const n = BASE + "/" + dir + "/" + r.savedAt.slice(0, 10) + " B Room 1 Row 1 Crate 1 " + r.id;
+      r.files = [{kind: "marked", suffix: "marked 1.jpg", uploaded: true, dropboxName: n.split("/").pop() + " marked 1.jpg"}, {kind: "original", suffix: "photo 1.jpg", uploaded: true, dropboxName: n.split("/").pop() + " photo 1.jpg"}];
+      D8.put(n + ".json", JSON.stringify(r)); D8.put(n + " marked 1.jpg", "m"); D8.put(n + " photo 1.jpg", "o"); return n; };
+    const paths = () => [...D8.files.values()].map(f => f.path.slice(BASE.length + 1));
+    const tomb = () => { const f = D8.files.get(LISTF.toLowerCase()); return f ? JSON.parse(f.body) : null; };
+    const pad = async (readings, {web = true} = {}) => {
+      const c = await browser.newContext({serviceWorkers: "block", viewport: {width: 1100, height: 900}}); await D8.install(c);
+      await c.addInitScript(rs => {
+        localStorage.setItem("tribar.dbx.tokens", JSON.stringify({access: "AT1", refresh: "RT", expiresAt: Date.now() + 3600e3}));
+        localStorage.setItem("tribar.dbx.account", JSON.stringify({name: "Test Inspector", rootNamespaceId: "7777"}));
+        if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: rs}));
+      }, readings);
+      const pg = await c.newPage(); pg.errs = []; pg.on("pageerror", e => pg.errs.push(e.message)); return {c, pg};
+    };
+    const idle = pg => pg.waitForFunction(() => !SYNC.busy && !SYNC.again && !TEAM.busy && TEAM.loaded && !TribarSync.pendingCsv() && !TribarSync.pendingDeletes(), null, {timeout: 20000})
+      .catch(async e => { console.log("not idle:", JSON.stringify(await pg.evaluate(() => ({busy: SYNC.busy, err: SYNC.error, team: TEAM.error, tbusy: TEAM.busy, csv: localStorage.getItem("tribar.dbx.csvPending"), q: localStorage.getItem("tribar.dbx.deleteQueue")})))); throw e; });
+    const dashSites = pg => pg.$$eval("#dashTable tbody tr", t => t.map(r => r.cells[0].innerText.trim()));
+
+    // the team folder: C044 (3 readings, 4 photos, one of them iPad A's), Keep Farm (2 readings), and a file in the base folder
+    const oth1 = rd("oth00001", "C044", "01", {photos: [{name: "a.jpg"}, {name: "b.jpg"}]}), oth2 = rd("oth00002", "C044", "02"), mineA = rd("mineA001", "C-44", "03", {by: "Test Inspector"});
+    putReading("C044", oth1); putReading("C044", oth2); putReading("C044", mineA);
+    D8.put(BASE + "/C044/Tribar readings - C044.csv", "old csv");
+    const keep1 = rd("keep0001", "Keep Farm", "04"), keep2 = rd("keep0002", "Keep Farm", "05");
+    putReading("Keep Farm", keep1); putReading("Keep Farm", keep2);
+    D8.put(BASE + "/Tribar readings - old notes.txt", "a file in the base folder is not a site");
+
+    /* iPad B: no signal, holding its own copies of C044 readings (one never uploaded, one backed up without a name) and a Keep Farm one */
+    const B = await pad([]);
+    await B.pg.goto(APP); await idle(B.pg);
+    ok((await dashSites(B.pg)).join(",") === "C044,Keep Farm", "B sees C044 and Keep Farm, and the file in the base folder isn't a site: " + (await dashSites(B.pg)).join(", "));
+    const bRows = [rd("mineB001", "c 44", "10", {by: "Test Inspector", synced: false, files: [{key: "mineB001/m1", kind: "marked", suffix: "marked 1.jpg"}]}),
+                   rd("mineB002", "C 044", "11", {by: undefined, synced: "2026-11-11T16:00:00Z"}),
+                   rd("mineB003", "Keep Farm", "12", {by: "Test Inspector", synced: false})];
+    await B.pg.evaluate(async rs => { await TribarSync.IDB.put("mineB001/m1", new Blob(["x"], {type: "image/jpeg"})); STATE.readings = rs; persist(); renderSaved(); }, bRows);
+    await B.c.setOffline(true);
+    ok((await dashSites(B.pg)).join(",") === "C044,Keep Farm" && await B.pg.evaluate(() => STATE.readings.length) === 3, "B, offline: its own copies still there, C044 from its saved copy of the team folder");
+
+    /* iPad A deletes the site */
+    const A = await pad([Object.assign({}, mineA, {site: "C-44", synced: "2026-11-03T16:00:00Z", files: mineA.files})]);
+    await A.pg.goto(APP + "#/site/c-44"); await idle(A.pg);
+    ok(await A.pg.$$eval("#siteView tbody tr", r => r.length) === 3, "A: the site page for C044 has its 3 readings");
+    ok(await A.pg.$$eval("#siteView tbody tr .btn.ghost[title='Delete reading']", b => b.length) === 3, "each reading on the site page has a Delete button");
+    let seen = null, dialogs = 0; A.pg.on("dialog", d => { dialogs++; seen = {type: d.type(), msg: d.message()}; d.accept(A.answer); });
+    A.answer = "not the name"; await A.pg.click("#siteView >> text=Delete site");
+    await A.pg.waitForFunction(() => /isn’t the site name/.test(document.querySelector("#toast").textContent), null, {timeout: 15000});
+    ok(seen && seen.type === "prompt" && /C044/.test(seen.msg) && /3 readings and 4 photos/.test(seen.msg) && /deleted files, where it can be restored/.test(seen.msg) && /Type the site name/.test(seen.msg),
+       "Delete site asks for the name and says what goes (" + (seen && seen.msg.replace(/\n+/g, " ").slice(0, 150)) + ")");
+    await A.pg.waitForTimeout(500);
+    ok(paths().some(n => n.startsWith("C044/")) && !tomb() && D8.deleted.length === 0, "a name that doesn't match deletes nothing");
+    D8.denyDelete = true; A.answer = "C044"; await A.pg.click("#siteView >> text=Delete site");
+    await A.pg.waitForFunction(() => /Couldn’t delete C044/.test(document.querySelector("#toast").textContent), null, {timeout: 15000});
+    ok(paths().some(n => n.startsWith("C044/")) && !tomb() && await A.pg.evaluate(() => STATE.readings.length) === 1, "Dropbox refuses: nothing deleted, nothing written to the list, A keeps its reading");
+    D8.denyDelete = false;
+    D8.onUpload = () => D8.put(LISTF, JSON.stringify({sites: {}, readings: {zzz00001: {id: "zzz00001", site: "Elsewhere", at: "2026-11-15T10:00:00Z", by: "Third Inspector"}}}));   // another iPad writes the list first
+    const t0 = new Date().toISOString();
+    A.answer = "C044"; await A.pg.click("#siteView >> text=Delete site");
+    await A.pg.waitForFunction(() => VIEW.name === "dash" && /^Deleted C044/.test(document.querySelector("#toast").textContent), null, {timeout: 15000});
+    await idle(A.pg);
+    ok(!paths().some(n => n.startsWith("C044/")) && D8.deleted.filter(x => x.endsWith("/C044")).length === 1, "the whole C044 folder is deleted with files/delete_v2 (" + D8.deleted.join(", ") + ")");
+    { const t = tomb(), s44 = t && t.sites.C44;
+      ok(s44 && s44.key === "C44" && s44.name === "C044" && s44.by === "Test Inspector" && s44.at >= t0 && Math.abs(Date.parse(s44.at) - Date.now()) < 60000, "Deleted sites.json lists the site: key, name, when, who " + JSON.stringify(s44));
+      ok(t && t.readings.zzz00001 && t.readings.zzz00001.by === "Third Inspector", "the list was merged with what another iPad wrote at the same moment, not overwritten"); }
+    ok(await A.pg.evaluate(() => STATE.readings.length) === 0 && (await dashSites(A.pg)).join(",") === "Keep Farm", "A: its own copies are gone and the dashboard is back, without C044: " + (await dashSites(A.pg)).join(", "));
+    ok(!paths().some(n => /^Tribar readings - C044/.test(n)) && paths().filter(n => n.startsWith("Keep Farm/")).length === 6, "Keep Farm untouched (and no summary came back for C044)");
+
+    /* iPad B gets signal again */
+    ok(!paths().some(n => /mineB/.test(n)), "(nothing of B's is in Dropbox yet)");
+    await B.c.setOffline(false); await B.pg.evaluate(() => window.dispatchEvent(new Event("online")));
+    await B.pg.waitForFunction(() => STATE.readings.length === 1, null, {timeout: 20000}); await idle(B.pg);
+    ok(!paths().some(n => /mineB00[12]/.test(n)) && !paths().some(n => /^(c 44|C 044|C044)\//.test(n)), "B did not upload its C044 copies (the unsent one, nor the one missing a name), and the folder didn't come back: " + paths().filter(n => /mineB|C044|c 44/.test(n)).join(" | "));
+    ok(await B.pg.evaluate(() => STATE.readings.map(r => r.id).join()) === "mineB003" && await B.pg.evaluate(() => TribarSync.IDB.get("mineB001/m1")) === null, "B's copies are gone from the iPad, with their photos");
+    ok(paths().some(n => /^Keep Farm\/.*mineB003\.json$/.test(n)), "B's Keep Farm reading uploads as usual");
+    { const m = await B.pg.textContent("#syncMsg"); ok(/Removed from this iPad because the team deleted them: 2 readings at C044 \(the site was deleted by Test Inspector/.test(m), "B says what was removed and why: " + m.match(/Removed[^.]*\)/)); }
+    ok((await dashSites(B.pg)).join(",") === "Keep Farm", "B's dashboard has no C044");
+    await B.c.setOffline(true); await B.pg.evaluate(() => { TEAM.index = null; TEAM.loaded = false; return refreshTeam(false); });
+    ok((await dashSites(B.pg)).join(",") === "Keep Farm" && await B.pg.evaluate(async () => !Object.values((await TribarSync.cachedIndex()).readings).some(e => /C044/.test(e.dir))),
+       "offline, from the copy of the team folder kept on the iPad: still no C044");
+    await B.c.setOffline(false);
+
+    /* readings saved after the deletion are new work: same site, folder comes back */
+    await B.pg.evaluate(() => { STATE.readings.unshift({id: "newB0001", savedAt: new Date(Date.now() + 5000).toISOString(), site: "c 44", barn: "B", room: "9", row: "1", crate: "1", band: "0-10%", worstSpot: 0.02, by: "Test Inspector", photos: [], files: [], synced: false}); persist(); });
+    await B.pg.evaluate(() => sync()); await idle(B.pg);
+    ok(paths().some(n => /^c 44\/.*newB0001\.json$/.test(n)) && paths().some(n => n === "c 44/Tribar readings - c 44.csv"), "a reading saved after the deletion uploads, recreating the folder: " + paths().filter(n => /newB/.test(n)).join(" | "));
+    await B.pg.evaluate(() => { location.hash = "#/"; }); await B.pg.waitForFunction(() => VIEW.name === "dash");
+    ok((await dashSites(B.pg)).join(",") === "c 44,Keep Farm", "and the site shows again with just that reading: " + (await dashSites(B.pg)).join(", ") + " / " + (await B.pg.$$eval("#dashTable tbody tr", t => t.map(r => r.cells[1].innerText.trim()))).join(","));
+    await B.c.close();
+
+    /* deleting one reading: its JSON and both photos go, the site CSV is rebuilt, other iPads can't bring it back */
+    D8.put(BASE + "/Keep Farm/Tribar readings - Keep Farm.csv", "old csv");
+    const C = await pad([]);           // iPad C: holds its own never-sent copy of keep0001, no signal
+    await C.pg.goto(APP); await idle(C.pg);
+    await C.pg.evaluate(rs => { STATE.readings = rs; persist(); renderSaved(); }, [Object.assign({}, rd("keep0001", "Keep Farm", "04"), {synced: false, by: "Test Inspector"})]);
+    await C.c.setOffline(true);
+    await A.pg.evaluate(() => { location.hash = "#/site/keep%20farm"; }); await A.pg.waitForFunction(() => VIEW.name === "site" && document.querySelectorAll("#siteView tbody tr").length === 2);
+    A.pg.removeAllListeners("dialog"); let msg2 = null; A.pg.once("dialog", d => { msg2 = d.message(); d.accept(); });
+    const rows = [];
+    await A.pg.locator("#siteView tbody tr").nth(0).locator("button[title='Delete reading']").click();
+    await A.pg.waitForFunction(() => document.querySelectorAll("#siteView tbody tr").length === 1, null, {timeout: 15000}); await idle(A.pg);
+    ok(/Delete the reading for/.test(msg2) && /deleted from the team folder in Dropbox too/.test(msg2) && !/hasn’t been backed up/.test(msg2), "deleting a backed-up reading says it goes from Dropbox too");
+    const left = paths().filter(n => n.startsWith("Keep Farm/")).sort();
+    const gone = [1, 2].map(i => "keep000" + i).filter(id => !paths().some(n => n.includes(" " + id))), still = [1, 2].map(i => "keep000" + i).filter(id => paths().some(n => n.includes(" " + id)));
+    ok(gone.length === 1 && still.length === 1 && left.length === 5, "one reading's JSON, marked-up photo and original are gone, the other readings' files (keep0002's 3, B's mineB003) and the CSV are kept: " + left.join(" | "));
+    ok(D8.deleted.filter(x => /keep farm\/.* keep000\d( marked 1\.jpg| photo 1\.jpg|\.json)$/.test(x)).length === 3, "with files/delete_v2: " + D8.deleted.slice(-3).join(", "));
+    { const csv = D8.files.get((BASE + "/Keep Farm/Tribar readings - Keep Farm.csv").toLowerCase()).body.toString(); ok(csv !== "old csv" && csv.trim().split("\r\n").length === 3 && !csv.includes("keep0001"), "the site CSV was rebuilt without the deleted reading: header and 2 readings"); }
+    const dead = gone[0];
+    ok(tomb().readings[dead] && tomb().readings[dead].by === "Test Inspector" && tomb().sites.C44 && tomb().readings.zzz00001, "the deleted reading's id is in the list, next to the earlier entries");
+    if (dead === "keep0001") {
+      await C.c.setOffline(false); await C.pg.evaluate(() => window.dispatchEvent(new Event("online")));
+      await C.pg.waitForFunction(() => STATE.readings.length === 0, null, {timeout: 20000}); await idle(C.pg);
+      ok(!paths().some(n => n.includes(" keep0001")), "iPad C held its own copy of the deleted reading: removed, not uploaded again");
+    } else ok(false, "unexpected order of rows: " + rows.join(" ; "));
+    await C.c.close();
+
+    /* delete reading with no signal: gone from the iPad now, deleted from Dropbox at the next sync */
+    const stay = rd("off00001", "Keep Farm", "06", {by: "Test Inspector"}), unsent = rd("off00002", "Keep Farm", "07", {by: "Test Inspector", synced: false});
+    const nameStay = putReading("Keep Farm", stay);
+    const E = await pad([]);
+    await E.pg.goto(APP + "#/measure"); await idle(E.pg);
+    await E.pg.evaluate(rs => { STATE.readings = rs; persist(); renderSaved(); }, [unsent, Object.assign({}, stay, {synced: "2026-11-06T16:00:00Z"})]);
+    await E.c.setOffline(true);
+    let msg3 = []; E.pg.on("dialog", d => { msg3.push(d.message()); d.accept(); });
+    const before = D8.log.length;
+    await E.pg.locator("#saved .reading", {hasText: "Room 1"}).first().locator("button[title='Delete reading']").click();   // off00002: not backed up yet (newest first)
+    ok(/hasn’t been backed up to Dropbox/.test(msg3[0]) && !/team folder in Dropbox too/.test(msg3[0]) && await E.pg.evaluate(() => STATE.readings.map(r => r.id).join()) === "off00001", "an unsent reading: the old warning, deleted on the iPad only");
+    await E.pg.locator("#saved .reading button[title='Delete reading']").click();
+    await E.pg.waitForFunction(() => STATE.readings.length === 0);
+    ok(await E.pg.evaluate(() => TribarSync.pendingDeletes()) === 1 && paths().some(n => n.includes(" off00001")) && D8.log.slice(before).every(l => l.endpoint !== "files/delete_v2"),
+       "no signal: the backed-up reading leaves the iPad at once, its Dropbox delete is queued");
+    await E.c.setOffline(false); await E.pg.evaluate(() => window.dispatchEvent(new Event("online"))); await idle(E.pg);
+    ok(!paths().some(n => n.includes(" off00001")) && tomb().readings.off00001, "back online: its files are deleted from Dropbox and the id is listed");
+    /* Delete site is not offered with no signal */
+    await E.pg.evaluate(() => { location.hash = "#/site/keep%20farm"; }); await E.pg.waitForFunction(() => VIEW.name === "site");
+    await E.c.setOffline(true); const nd = msg3.length;
+    await E.pg.click("#siteView >> text=Delete site"); await E.pg.waitForTimeout(400);
+    ok(msg3.length === nd && /No signal/.test(await E.pg.textContent("#toast")) && paths().some(n => n.startsWith("Keep Farm/")), "Delete site with no signal: refused, nothing asked, nothing deleted");
+    ok(![A, B, E].some(x => x.pg.errs.length), "no page errors" + [A, B, E].map(x => x.pg.errs.join("; ")).join(""));
+    await E.c.close(); await A.c.close();
   }
 
   /* ---- a new page with the browser's cached copy of the previous sync.js ---- */
