@@ -271,9 +271,9 @@
   <div id="dashView" hidden>
     <div class="vhead">
       <div><h1 class="vtitle">Dashboard</h1>
-        <p class="vsub">Every site's tribar readings in the team Dropbox folder, plus any on this iPad that aren't backed up yet.</p></div>
+        <p class="vsub">Every site's tribar readings in the team Dropbox folder, plus any on this device that aren't backed up yet.</p></div>
       <div class="acts">
-        <a class="btn big" id="savedLink" href="#/saved">Saved on this iPad</a>
+        <a class="btn big" id="savedLink" href="#/saved">Saved on this device</a>
         <button class="btn primary big" id="newReadingBtn">+ New reading</button>
       </div>
     </div>
@@ -298,11 +298,11 @@
   <!-- ============ SAVED READINGS ============ -->
   <section class="card">
     <div class="hdr">
-      <h2>Saved on this iPad <span class="count" id="savedCount"></span></h2><span class="spacer"></span>
+      <h2>Saved on this device <span class="count" id="savedCount"></span></h2><span class="spacer"></span>
       <button class="btn sm primary" id="csvBtn">⬇ Export CSV</button>
       <button class="btn sm" id="clearBtn">Clear all</button>
     </div>
-    <p class="tip" id="savedTip" style="margin-top:0">The readings saved on this iPad, backed up or not. Every site's readings, this iPad's and the team's, are on the <a href="#/">Dashboard</a>.</p>
+    <p class="tip" id="savedTip" style="margin-top:0">The readings saved on this device, backed up or not. Every site's readings, this device's and the team's, are on the <a href="#/">Dashboard</a>.</p>
     <div id="saved"></div>
   </section>
 
@@ -1230,7 +1230,7 @@ async function editSpots(e){
   editLoading = true;
   try{
     const online = TribarSync.signedIn() && navigator.onLine !== false;
-    const later = "The original photos aren’t on this iPad. They’ll be available once there’s signal.";
+    const later = "The original photos aren’t on this device. They’ll be available once there’s signal.";
     // The reading as it is now. One not backed up yet exists only here. A backed-up one: Dropbox has the latest copy
     // (another iPad may have edited it), and the full one (the dashboard's copy leaves out where the spots are).
     let base = e.local && !e.local.synced ? e.local : null, dir = e.dir || null;
@@ -1253,7 +1253,7 @@ async function editSpots(e){
         try{ dir = dir || await TribarSync.readingDir(base.site); blob = await TribarSync.teamFile(dir, f.dropboxName); }
         catch(err){ return toast(err.code === "offline" ? later : "Couldn’t download the original photo: " + err.message); }
       }
-      if (!blob) return toast(online ? "The original of photo " + (i + 1) + " isn’t on this iPad or in Dropbox." : later);
+      if (!blob) return toast(online ? "The original of photo " + (i + 1) + " isn’t on this device or in Dropbox." : later);
       blobs.push(blob);
     }
     for (const p of STATE.photos) if (p.img && p.img.close) p.img.close();
@@ -1275,7 +1275,7 @@ async function editSpots(e){
 function renderSaved(){
   const box = $("#saved"); box.innerHTML = "";
   $("#savedCount").textContent = STATE.readings.length ? "(" + STATE.readings.length + ")" : "";
-  $("#savedLink").textContent = "Saved on this iPad" + (STATE.readings.length ? " (" + STATE.readings.length + ")" : "");
+  $("#savedLink").textContent = "Saved on this device" + (STATE.readings.length ? " (" + STATE.readings.length + ")" : "");
   $("#csvBtn").disabled = $("#clearBtn").disabled = !STATE.readings.length;
   renderSync();
   if (!STATE.readings.length){ box.appendChild(el("p", {class:"empty", text:"Nothing saved yet."})); return; }
@@ -1788,7 +1788,7 @@ function siteStatus(s){
   if (s.status === "past") return el("span", {class:"pill done", text:"Completed" + (s.statusAt ? " " + fmtDay(s.statusAt) : "")});
   if (s.waiting) return el("span", {class:"pill wait", text:"⏳ " + s.waiting + " not backed up"});
   if (s.readings.some(e => e.team || (e.local && e.local.synced))) return el("span", {class:"pill ok", text:"☁ Backed up"});
-  return el("span", {class:"pill", text:"This iPad"});
+  return el("span", {class:"pill", text:"This device"});
 }
 
 /* ---------------- dashboard ---------------- */
@@ -1803,7 +1803,7 @@ function renderDash(){
   k.appendChild(kpi(list.length, "Sites"));
   k.appendChild(kpi(readings.length, "Readings"));
   k.appendChild(kpi(worst ? el("b", {text:BAND_TEXT[worst], style:"color:" + BAND_COLORS[worst]}) : "—", "Worst reading"));
-  k.appendChild(kpi(left, "Not backed up (this iPad)", left ? "warn" : ""));
+  k.appendChild(kpi(left, "Not backed up (this device)", left ? "warn" : ""));
 
   const tabs = $("#dashTabs"); tabs.innerHTML = "";
   for (const [t, label] of TABS){
@@ -1889,7 +1889,7 @@ function renderSitePage(){
       td("That bar", [r.worstBar != null ? pct(r.worstBar) : "—"]),
       td("Saved", [el("span", {class:"nowrap", text:fmtDay(r.savedAt)}), r.by ? el("span", {class:"small", text:r.by}) : null,
         lastEdit(r) ? el("span", {class:"small edited", text:"✎ Edited " + fmtDay(lastEdit(r).at) + (lastEdit(r).by ? " by " + lastEdit(r).by : "")}) : null]),
-      td("Backup", [waiting(e) ? el("span", {class:"pill wait", text:"⏳ This iPad only"}) : el("span", {class:"pill ok", text:"☁ Backed up"})]),
+      td("Backup", [waiting(e) ? el("span", {class:"pill wait", text:"⏳ This device only"}) : el("span", {class:"pill ok", text:"☁ Backed up"})]),
       td("", [marked.length ? el("button", {class:"btn sm", text:"🖼 Photo" + (marked.length > 1 ? "s" : ""), onclick:() => openPhotos(e)}) : null, ...editButton(e)], "acts"),
     ]));
   }
@@ -1943,7 +1943,7 @@ function announceRemoved(list){
   for (const x of list) shareCache.delete(x.r.id);
   const sites = new Map();
   for (const x of list){ const v = sites.get(x.name) || {n:0, by:x.by, at:x.at}; v.n++; sites.set(x.name, v); }
-  SYNC.notice = "Removed from this iPad because the team deleted the site: " +
+  SYNC.notice = "Removed from this device because the team deleted the site: " +
     [...sites].map(([name, v]) => v.n + " backed-up reading" + (v.n === 1 ? "" : "s") + " at " + name + " (deleted" + (v.by ? " by " + v.by : "") + " " + fmtDay(v.at) + ")").join("; ") + ".";
   toast(SYNC.notice); persist(); renderSaved();
 }
@@ -1958,8 +1958,8 @@ async function deleteSite(s){
     const unsent = cur.readings.filter(e => e.local && !e.local.synced), gone = cur.readings.filter(e => !unsent.includes(e));
     const nR = gone.length, nP = gone.reduce((n, e) => n + ((e.r.photos || []).length), 0);
     const typed = prompt("Delete the site " + cur.name + "?\n\nThis deletes its Dropbox folder with " + nR + " reading" + (nR === 1 ? "" : "s") + " and " + nP + " photo" + (nP === 1 ? "" : "s") +
-      " for everyone, and the backed-up copies on this iPad. Dropbox keeps the folder in its deleted files, where it can be restored." +
-      (unsent.length ? "\n\n" + unsent.length + " reading" + (unsent.length === 1 ? " on this iPad hasn’t" : "s on this iPad haven’t") + " been backed up, so " + (unsent.length === 1 ? "it is" : "they are") +
+      " for everyone, and the backed-up copies on this device. Dropbox keeps the folder in its deleted files, where it can be restored." +
+      (unsent.length ? "\n\n" + unsent.length + " reading" + (unsent.length === 1 ? " on this device hasn’t" : "s on this device haven’t") + " been backed up, so " + (unsent.length === 1 ? "it is" : "they are") +
                        " kept and will upload again, which brings the site back." : "") +
       "\n\nType the site name to confirm:");
     if (typed == null) return;
@@ -1972,7 +1972,7 @@ async function deleteSite(s){
     renderSaved(); go("#/");
     toast("Deleted " + cur.name + ": " + nR + " reading" + (nR === 1 ? "" : "s") + ", " + nP + " photo" + (nP === 1 ? "" : "s") + ". Dropbox keeps it in its deleted files." +
           (unsent.length ? " " + unsent.length + " not backed up, kept." : "") +
-          (res.queued ? " The list that stops other iPads bringing it back couldn’t be updated yet; it will be at the next sync." : ""));
+          (res.queued ? " The list that stops other devices bringing it back couldn’t be updated yet; it will be at the next sync." : ""));
     await refreshTeam(true); if (res.queued || unsent.length) sync();
   } finally { DELETING = false; }
 }
@@ -2008,6 +2008,11 @@ async function photoSheet(s, all){
   if (typeof TribarPdf === "undefined") return toast("The photo sheet isn’t ready. Close the app and open it again with signal to finish updating it.");
   if (sheetBusy) return;
   sheetBusy = true;
+  // The PDF opens in a new tab (the browser's own viewer: look, print, save), not in a share dialog. The tab is opened now,
+  // while the tap still counts (Safari and Chrome only allow it straight from a tap), and given the PDF when it's built.
+  let win = null;
+  try{ win = window.open("", "_blank"); if (win){ win.document.title = "Photo sheet"; win.document.body.textContent = "Building the photo sheet…"; } }catch(e){}
+  const closeWin = () => { try{ if (win) win.close(); }catch(e){} };
   try{
     toast("Building the photo sheet…");
     const online = TribarSync.signedIn() && navigator.onLine !== false, items = [], dates = [];
@@ -2023,14 +2028,23 @@ async function photoSheet(s, all){
       }
       if (got){ used++; dates.push(r.savedAt); } else left++;
     }
-    if (!items.length) return toast("No marked-up photos to put in the sheet." + (online ? "" : " With no signal, only the photos on this iPad can be used."));
+    if (!items.length){ closeWin(); return toast("No marked-up photos to put in the sheet." + (online ? "" : " With no signal, only the photos on this device can be used.")); }
     const notes = left ? [left + " reading" + (left === 1 ? "" : "s") + " left out: " + (left === 1 ? "its" : "their") + " marked-up photo" + (left === 1 ? " isn’t" : "s aren’t") +
-                          " on this iPad and " + (online ? "couldn’t be downloaded." : "there is no signal to download " + (left === 1 ? "it." : "them."))] : [];
+                          " on this device and " + (online ? "couldn’t be downloaded." : "there is no signal to download " + (left === 1 ? "it." : "them."))] : [];
     const built = TribarPdf.build({title:"Tribar corrosion photos", subtitle:[s.name, dateRange(dates), used + " reading" + (used === 1 ? "" : "s")].filter(Boolean).join(" · "),
       notes, items, perPage:2, footer:"Johnson Engineering Group · " + s.name});
-    const day = new Date().toISOString().slice(0, 10);
-    await shareOrDownload("Tribar photo sheet - " + TribarSync.folderName(s.name) + " - " + day + ".pdf", new Blob([built.pdf], {type:"application/pdf"}), "application/pdf");
-  } finally { sheetBusy = false; }
+    const name = "Tribar photo sheet - " + TribarSync.folderName(s.name) + " - " + new Date().toISOString().slice(0, 10) + ".pdf", blob = new Blob([built.pdf], {type:"application/pdf"});
+    if (win && !win.closed){
+      const url = URL.createObjectURL(blob);
+      win.location.href = url;
+      toast("The photo sheet is open in another tab.");
+      setTimeout(() => URL.revokeObjectURL(url), 10 * 60e3);
+    } else {                                    // the browser wouldn't open a tab: download it
+      downloadBlob(name, blob);
+      toast("Downloaded " + name);
+    }
+  } catch(e){ closeWin(); throw e; }
+  finally { sheetBusy = false; }
 }
 
 /* ---------------- the marked-up photo viewer ---------------- */
