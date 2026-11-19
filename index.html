@@ -272,7 +272,10 @@
     <div class="vhead">
       <div><h1 class="vtitle">Dashboard</h1>
         <p class="vsub">Every site's tribar readings in the team Dropbox folder, plus any on this iPad that aren't backed up yet.</p></div>
-      <button class="btn primary big" id="newReadingBtn">+ New reading</button>
+      <div class="acts">
+        <a class="btn big" id="savedLink" href="#/saved">Saved on this iPad</a>
+        <button class="btn primary big" id="newReadingBtn">+ New reading</button>
+      </div>
     </div>
     <div class="sync" id="syncBar"><span class="msg" id="syncMsg"></span>
       <button class="btn sm" id="syncBtn" hidden>⟳ Sync now</button>
@@ -288,6 +291,22 @@
 
   <!-- ============ ONE SITE ============ -->
   <div id="siteView" hidden></div>
+
+  <!-- ============ SAVED ON THIS IPAD ============ -->
+  <div id="savedView" hidden>
+    <div class="crumbs"><a href="#/">‹ Dashboard</a></div>
+  <!-- ============ SAVED READINGS ============ -->
+  <section class="card">
+    <div class="hdr">
+      <h2>Saved on this iPad <span class="count" id="savedCount"></span></h2><span class="spacer"></span>
+      <button class="btn sm primary" id="csvBtn">⬇ Export CSV</button>
+      <button class="btn sm" id="clearBtn">Clear all</button>
+    </div>
+    <p class="tip" id="savedTip" style="margin-top:0">The readings saved on this iPad, backed up or not. Every site's readings, this iPad's and the team's, are on the <a href="#/">Dashboard</a>.</p>
+    <div id="saved"></div>
+  </section>
+
+  </div>
 
   <!-- ============ MEASURING ============ -->
   <div id="measureView" hidden>
@@ -342,17 +361,6 @@
 
   <!-- ============ RESULT ============ -->
   <section class="card result" id="resultCard"></section>
-
-  <!-- ============ SAVED READINGS ============ -->
-  <section class="card">
-    <div class="hdr">
-      <h2>Saved on this iPad <span class="count" id="savedCount"></span></h2><span class="spacer"></span>
-      <button class="btn sm primary" id="csvBtn">⬇ Export CSV</button>
-      <button class="btn sm" id="clearBtn">Clear all</button>
-    </div>
-    <p class="tip" id="savedTip" style="margin-top:0">Backup to Dropbox and every site's readings, this iPad's and the team's, are on the <a href="#/">Dashboard</a>.</p>
-    <div id="saved"></div>
-  </section>
 
   <p class="foot">Width loss = 1 − (bar width ÷ bar pitch) ÷ 0.4686, the width-to-pitch ratio of new tribar measured at C44,
     reported 1:1 as cross-section loss. The result is the worst spot you tap: the median width over one bar-spacing of
@@ -1267,6 +1275,7 @@ async function editSpots(e){
 function renderSaved(){
   const box = $("#saved"); box.innerHTML = "";
   $("#savedCount").textContent = STATE.readings.length ? "(" + STATE.readings.length + ")" : "";
+  $("#savedLink").textContent = "Saved on this iPad" + (STATE.readings.length ? " (" + STATE.readings.length + ")" : "");
   $("#csvBtn").disabled = $("#clearBtn").disabled = !STATE.readings.length;
   renderSync();
   if (!STATE.readings.length){ box.appendChild(el("p", {class:"empty", text:"Nothing saved yet."})); return; }
@@ -1677,9 +1686,9 @@ const BANDS = Object.keys(BAND_COLORS);                    // lowest loss first
 function route(){
   const h = location.hash || "", m = /^#\/site\/(.*)$/.exec(h);
   const was = VIEW.name;
-  VIEW.name = /^#\/measure/.test(h) ? "measure" : m ? "site" : "dash";
+  VIEW.name = /^#\/measure/.test(h) ? "measure" : /^#\/saved/.test(h) ? "saved" : m ? "site" : "dash";
   if (m) VIEW.site = decodeURIComponent(m[1]);
-  for (const v of ["dash", "site", "measure"]) $("#" + v + "View").hidden = VIEW.name !== v;
+  for (const v of ["dash", "site", "measure", "saved"]) $("#" + v + "View").hidden = VIEW.name !== v;
   showSite();
   if (VIEW.name === "measure"){ renderCrumbs(); try{ fillSiteList(); }catch(e){ console.error(e); } } else redrawTeamViews();
   if (was !== VIEW.name || VIEW.name === "site") window.scrollTo(0, 0);
@@ -1717,6 +1726,7 @@ function redrawTeamViews(){
     renderSync();
     if (VIEW.name === "dash") renderDash();
     else if (VIEW.name === "site") renderSitePage();
+    else if (VIEW.name === "saved") renderSaved();
   }catch(e){      // say so, rather than leave a blank page
     console.error(e);
     const box = VIEW.name === "site" ? $("#siteView") : $("#dashTable");
