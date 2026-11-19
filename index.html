@@ -77,7 +77,7 @@
   .tip{color:var(--muted);font-size:13px;margin:0 0 12px}
 
   /* ---------- Location ---------- */
-  .loc{display:grid;grid-template-columns:1.1fr 1.4fr .8fr .8fr 1fr;gap:12px;align-items:end}
+  .loc{display:grid;grid-template-columns:1.1fr 1.4fr .7fr .7fr .8fr .9fr;gap:12px;align-items:end}
   @media(max-width:640px){.loc{grid-template-columns:1fr 1fr}}
   .f label{display:block;font-weight:600;font-size:13px;margin-bottom:5px}
   .f .hint{font-weight:400;color:var(--muted)}
@@ -101,6 +101,11 @@
   .win.hot{outline:3px solid #c026d3;outline-offset:1px;z-index:2}
   .win .hotLbl{position:absolute;left:0;bottom:0;max-width:100%;background:#c026d3;color:#fff;font-weight:700;font-size:12px;padding:2px 6px;line-height:1.3}
   .editbar{background:#eef6ff;border-color:#9ec5f0}
+  .need{color:#8a5a00;background:#fff4d6;border-radius:8px;padding:8px 11px;font-size:13.5px;margin:12px 0 0}
+  .lastv{margin-top:10px;font-size:13.5px;color:var(--ink)}
+  .lastv.none{color:var(--muted)}
+  .lastv b{font-weight:700}
+  .chk{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:var(--muted)}
   input.text:disabled{background:#eef1f4;color:#5a6672;cursor:not-allowed}
   .editbar p{margin:4px 0 10px;font-size:13.5px}
   .win .lbl{position:absolute;left:4px;top:4px;max-width:calc(100% - 8px);color:#fff;background:#9aa5b1;font-weight:700;
@@ -284,17 +289,20 @@
   <div class="crumbs" id="measureCrumbs"></div>
   <section class="card editbar" id="editBar" hidden></section>
   <!-- ============ LOCATION ============ -->
-  <section class="card">
-    <div class="hdr"><h2>Location</h2></div>
+  <section class="card" id="locCard">
+    <div class="hdr"><h2>Location</h2><button class="btn sm" id="sameLocBtn" hidden title="Go back to the location of the reading just saved, to redo it">↺ Same location</button></div>
     <div class="loc">
       <div class="f"><label for="fSite">Site</label><input class="text" id="fSite" placeholder="e.g. C072" autocomplete="off" list="siteList"><datalist id="siteList"></datalist></div>
       <div class="f"><label for="fBarn">Barn</label><input class="text" id="fBarn" placeholder="e.g. Farrowing 2" autocomplete="off"></div>
       <div class="f"><label for="fRoom">Room</label><input class="text" id="fRoom" inputmode="numeric" autocomplete="off"></div>
       <div class="f"><label for="fRow">Row</label><input class="text" id="fRow" inputmode="numeric" autocomplete="off"></div>
+      <div class="f"><label for="fPerRow">Crates per row</label><input class="text" id="fPerRow" inputmode="numeric" placeholder="e.g. 24" autocomplete="off"></div>
       <div class="f"><label for="fCrate"># of Crates from front of room</label>
         <input class="text" id="fCrate" inputmode="numeric" placeholder="front crate = 1" autocomplete="off"></div>
     </div>
+    <p class="tip" id="sideTag" style="margin:8px 0 0"></p>
     <div class="f note"><label for="fNote">Note <span class="hint">(optional)</span></label><input class="text" id="fNote" autocomplete="off"></div>
+    <div class="lastv" id="lastVisit" hidden></div>
   </section>
 
   <!-- ============ PHOTOS ============ -->
@@ -366,8 +374,11 @@
 
 <script src="./tribar.js"></script>
 <script src="./sync.js"></script>
+<script src="./pdf.js"></script>
 <script>
 "use strict";
+
+const REQUIRED_PHOTOS = 3;      // photos with a tapped spot that a reading needs before it can be saved
 
 const $ = sel => document.querySelector(sel);
 const el = (tag, props={}, kids=[]) => {
@@ -401,7 +412,10 @@ const widerWarning = loss => "This spot reads " + pct(-loss) + " wider than new 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const STATE = {
-  loc: {site:"", barn:"", room:"", row:"", crate:"", note:""},
+  loc: {site:"", barn:"", room:"", row:"", crate:"", perRow:"", note:""},
+  perRowMemo: {},   // crates per row, remembered per site and barn
+  locKey: null,     // {key, site, barn}: the site and barn the crates-per-row field currently belongs to
+  lastLoc: null,    // the location of the reading saved last, for Same location
   photos: [],      // the reading being taken: {id, name, status, msg, progress, result, pick (the tapped worst bar), ...}
   readings: [],    // saved readings, newest first
   marks: true,
@@ -409,13 +423,14 @@ const STATE = {
 };
 
 function persist(){
-  try{ localStorage.setItem(STORE_KEY, JSON.stringify({loc:STATE.loc, readings:STATE.readings, marks:STATE.marks})); }
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify({loc:STATE.loc, readings:STATE.readings, marks:STATE.marks, perRow:STATE.perRowMemo, lastLoc:STATE.lastLoc})); }
   catch(e){ toast("Couldn’t save on this device: "+e.message); }
 }
 function restore(){
   try{
     const d = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
-    if (d){ Object.assign(STATE.loc, d.loc||{}); STATE.readings = d.readings||[]; if (d.marks===false) STATE.marks=false; }
+    if (d){ Object.assign(STATE.loc, d.loc||{}); STATE.readings = d.readings||[]; if (d.marks===false) STATE.marks=false;
+            STATE.perRowMemo = d.perRow || {}; STATE.lastLoc = d.lastLoc || null; }
     delete STATE.loc.side;    // the old Front/Back field, replaced by the crate count
     for (const r of STATE.readings) if (!r.files){ r.files = []; r.synced = false; }   // saved before the Dropbox backup: back up the numbers
   }catch(e){/* start fresh */}
@@ -429,7 +444,99 @@ function toast(msg){
 
 function locLabel(r){
   return [r.barn, r.room && "Room "+r.room, r.row && "Row "+r.row,
-          r.crate ? "Crate "+r.crate+" from front" : r.side && r.side+" side"].filter(Boolean).join(" · ") || "No location";
+          r.crate ? "Crate "+r.crate+" from front" : r.side && r.side+" side",
+          r.crate && r.perRow && r.side ? r.side+" side" : null].filter(Boolean).join(" · ") || "No location";
+}
+
+/* ------------------------------------------------------------------ *
+ *  Location: the side of the row, crates per row (remembered per site
+ *  and barn), the next location after a save, and the last visit
+ * ------------------------------------------------------------------ */
+const toNum = v => { const n = parseInt(v, 10); return n > 0 ? n : null; };
+// Front side up to half the crates in the row, back side after that
+const sideOf = (crate, perRow) => { const c = toNum(crate), n = toNum(perRow); return c && n ? (c <= n / 2 ? "Front" : "Back") : null; };
+const backStart = n => Math.floor(n / 2) + 1;                 // the first crate of the back side
+const sideOfReading = r => r.side || sideOf(r.crate, r.perRow);
+const perRowKey = (site, barn) => TribarSync.siteKey(site) + "|" + String(barn || "").trim().toLowerCase();
+// the crates per row for a site and barn: what was typed last time, else what the team's readings there say
+function perRowFor(site, barn){
+  const key = perRowKey(site, barn);
+  if (STATE.perRowMemo[key]) return STATE.perRowMemo[key];
+  let best = null;
+  for (const e of allReadings()) if (e.r.perRow && perRowKey(e.r.site, e.r.barn) === key && (!best || e.r.savedAt > best.savedAt)) best = e.r;
+  return best ? best.perRow : null;
+}
+const LOC_BLANK = {site:"", barn:"", room:"", row:"", crate:"", perRow:"", note:""};
+function setLoc(k, v){
+  STATE.loc[k] = v;
+  const id = Object.keys(LOC_FIELDS).find(i => LOC_FIELDS[i] === k); if (id) $("#" + id).value = v;
+}
+const locKeyNow = () => STATE.loc.site && STATE.loc.barn ? {key:perRowKey(STATE.loc.site, STATE.loc.barn), site:STATE.loc.site, barn:STATE.loc.barn} : null;
+function fillPerRow(){
+  const L = STATE.loc, now = locKeyNow(), prev = STATE.locKey, known = now && perRowFor(L.site, L.barn);
+  if (known) setLoc("perRow", String(known));
+  else if (prev && (!now || prev.key !== now.key) && L.perRow && String(perRowFor(prev.site, prev.barn)) === String(L.perRow)) setLoc("perRow", "");    // it was the last barn's
+  STATE.locKey = now;
+}
+// a field of the form was changed by the inspector
+function locEdited(key){
+  if (key === "site" || key === "barn") fillPerRow();
+  if (key === "perRow"){
+    if (STATE.loc.site && STATE.loc.barn && toNum(STATE.loc.perRow)) STATE.perRowMemo[perRowKey(STATE.loc.site, STATE.loc.barn)] = toNum(STATE.loc.perRow);
+  }
+  updateLocUI();
+}
+// the form's location as a reading, to find its side and its last visit
+function formReading(){
+  const L = STATE.loc, ed = STATE.editing && STATE.editing.base;
+  return Object.assign({}, L, {side:sideOf(L.crate, L.perRow), perRow:toNum(L.perRow), savedAt:ed ? ed.savedAt : new Date().toISOString(), id:ed ? ed.id : null});
+}
+// After a save: the same site, barn and room, the next place along. Front side, then the back side of the same row, then
+// the front of the next row; after the last row the inspector types the next room. Returns a short description, or null
+// when the crates per row aren't known (then the location stays as it was).
+function advanceLocation(r){
+  STATE.lastLoc = {site:r.site || "", barn:r.barn || "", room:r.room || "", row:r.row || "", crate:r.crate || "", perRow:r.perRow ? String(r.perRow) : "", note:r.note || ""};
+  const n = toNum(r.perRow), side = r.side;
+  if (!n || !side) return null;
+  setLoc("note", "");
+  if (side === "Front"){ setLoc("crate", String(backStart(n))); return "Row " + (r.row || "?") + " · Back side · crate " + backStart(n); }
+  const row = /^\d+$/.test(String(r.row || "").trim()) ? String(parseInt(r.row, 10) + 1) : null;
+  if (row) setLoc("row", row);
+  setLoc("crate", "1");
+  return (row ? "Row " + row : "Row " + (r.row || "?") + " (change it)") + " · Front side · crate 1";
+}
+function sameLocation(){
+  if (!STATE.lastLoc || STATE.editing) return;
+  for (const k of Object.keys(LOC_BLANK)) setLoc(k, STATE.lastLoc[k] || "");
+  STATE.locKey = locKeyNow(); persist(); updateLocUI(); renderResult(); renderCrumbs(); showSite();
+}
+/* The reading at the same site, barn, room, row and side from the most recent earlier visit: saved more than a week
+   before this one. Readings from the team's folder count too. */
+const WEEK = 7 * 86400e3, norm = v => String(v == null ? "" : v).trim().toLowerCase();
+const visitKey = r => { const side = sideOfReading(r); return r.site && r.barn && r.room && r.row && side ? [TribarSync.siteKey(r.site), norm(r.barn), norm(r.room), norm(r.row), norm(side)].join("|") : null; };
+function lastVisit(r, pool){
+  const key = visitKey(r); if (!key) return null;
+  const before = Date.parse(r.savedAt) - WEEK;
+  let best = null;
+  for (const q of pool) if (q.id !== r.id && q.band && visitKey(q) === key && Date.parse(q.savedAt) < before && (!best || q.savedAt > best.savedAt)) best = q;
+  return best;
+}
+const poolOf = () => allReadings().map(e => e.r);
+const lastVisitText = q => "Last visit " + fmtDay(q.savedAt) + ": " + BAND_TEXT[q.band];
+const betterThan = (band, q) => !!q && BANDS.indexOf(band) < BANDS.indexOf(q.band);
+const BETTER_NOTE = "Better than last visit. Tribar replaced?";
+function updateLocUI(){
+  const L = formReading(), tag = $("#sideTag"), lv = $("#lastVisit");
+  tag.textContent = L.side ? L.side + " side of the row" + (toNum(L.perRow) ? " (crates 1 to " + Math.floor(toNum(L.perRow) / 2) + " are the front side)" : "")
+    : L.crate && !L.perRow ? "Fill in the crates per row to get the side." : "";
+  $("#sameLocBtn").hidden = !STATE.lastLoc || !!STATE.editing;
+  lv.innerHTML = ""; lv.className = "lastv";
+  const full = visitKey(L);
+  lv.hidden = !full;
+  if (!full) return;
+  const q = lastVisit(L, poolOf());
+  if (q) lv.appendChild(el("b", {text:lastVisitText(q)}));
+  else { lv.className = "lastv none"; lv.textContent = "No earlier visit (more than a week ago) at this site, barn, room, row and side."; }
 }
 
 /* ------------------------------------------------------------------ *
@@ -805,6 +912,9 @@ function updateGuides(){
  *  (e.g. the bar's own texture at that spot), so it helps, but by less
  *  than the square root of the number of photos would suggest.
  * ------------------------------------------------------------------ */
+// Photos with a tapped spot a reading needs. A reading saved before this rule with fewer photos can still be edited and
+// saved with the photos it had, so old readings don't get stuck.
+const requiredPhotos = () => STATE.editing ? Math.min(REQUIRED_PHOTOS, (STATE.editing.base.photos || []).length || REQUIRED_PHOTOS) : REQUIRED_PHOTOS;
 const SPREAD_WARN = 0.10;    // photos of one spot reading further apart than this probably show different spots
 function currentSummary(){
   const done = STATE.photos.filter(p => p.status === "done"), picked = done.filter(p => p.pick);
@@ -833,7 +943,7 @@ function renderResult(){
   }
   const photos = done.length > 1 ? " across the photos" : "";
   if (!avg){
-    card.appendChild(el("p", {class:"empty", text: busy ? "Measuring…" : "Tap the worst spot on the worst bar to get the result."}));
+    card.appendChild(el("p", {class:"empty", text: busy ? "Measuring…" : "Tap the worst spot on the worst bar to get the result. A reading needs " + requiredPhotos() + " photos with a tapped spot before it can be saved."}));
     card.appendChild(el("div", {class:"stats"}, [stat(pct(typical.typical), "Typical width loss" + photos),
                                                  stat(typical.n + " of " + total, "Windows measured")]));
     return;
@@ -845,7 +955,7 @@ function renderResult(){
       avg.count > 1 ? "at the worst spot, averaged over " + avg.count + " photos" : "at the worst spot you tapped, from one photo"]),
   ]));
   // Fewer than 3 tapped: first ask for the same spot in photos already taken, then for more photos
-  const untapped = done.length - picked.length, more = 3 - avg.count - untapped;
+  const need = requiredPhotos() - picked.length, untapped = done.length - picked.length, more = requiredPhotos() - avg.count - untapped;
   if (untapped && !busy) card.appendChild(el("p", {class:"spots", text:untapped === 1
     ? "1 photo has no spot tapped and isn't in the average. Tap the same spot in it, or remove it."
     : untapped + " photos have no spot tapped and aren't in the average. Tap the same spot in each, or remove them."}));
@@ -870,12 +980,15 @@ function renderResult(){
     stat(pct(typical.typical), "Typical width loss" + photos + ", for comparison"),
     stat(typical.n + " of " + total, "Windows measured"),
   ]));
+  const lv = lastVisit(formReading(), poolOf());
+  if (lv && betterThan(band, lv)) card.appendChild(el("p", {class:"warn", text:lastVisitText(lv) + ". " + BETTER_NOTE}));
+  if (need > 0 && !busy) card.appendChild(el("p", {class:"need", text:"Saving needs " + requiredPhotos() + " photos with a tapped spot. " + need + " more " + (need === 1 ? "photo still needs" : "photos still need") + " a tapped spot."}));
   card.appendChild(el("div", {class:"hdr", style:"margin:0"}, [
     el("span", {class:"tip", style:"margin:0;flex:1 1 220px", text:STATE.editing
       ? "Updates the reading saved " + stamp(STATE.editing.base.savedAt) + " (the same reading, not a new one)"
-      : "Saves under: " + [STATE.loc.site, locLabel(STATE.loc)].filter(Boolean).join(" · ")}),
+      : "Saves under: " + [STATE.loc.site, locLabel(formReading())].filter(Boolean).join(" · ")}),
     el("button", {class:"btn", text:STATE.editing ? "Cancel edit" : "Discard", onclick:discardReading}),
-    el("button", {class:"btn primary", id:"saveBtn", text:STATE.editing ? "✓ Save changes" : "✓ Save reading", disabled: busy ? "" : null, onclick:saveReading}),
+    el("button", {class:"btn primary", id:"saveBtn", text:STATE.editing ? "✓ Save changes" : "✓ Save reading", disabled: busy || need > 0 ? "" : null, onclick:saveReading}),
   ]));
 }
 
@@ -888,13 +1001,14 @@ function discardReading(){
 let saving = false;
 async function saveReading(){
   const {done, picked, avg, typical, total} = currentSummary();
-  if (!avg || saving) return;
+  if (!avg || picked.length < requiredPhotos() || saving) return;
   saving = true; const btn = $("#saveBtn"); if (btn){ btn.disabled = true; btn.textContent = "Saving…"; }
   try{
     const ed = STATE.editing, old = ed && ed.base, me = (TribarSync.account() || {}).name || null;
     const id = old ? old.id : uid(), worst = picked.slice().sort((a, b) => b.pick.loss - a.pick.loss)[0];
     const r = {
-      id, savedAt:old ? old.savedAt : new Date().toISOString(), ...STATE.loc, by:old ? old.by || me : me,
+      id, savedAt:old ? old.savedAt : new Date().toISOString(), ...STATE.loc, perRow:toNum(STATE.loc.perRow), side:sideOf(STATE.loc.crate, STATE.loc.perRow),
+      by:old ? old.by || me : me,
       band:Tribar.grade(avg.loss), worstSpot:avg.loss, worstSpotRatio:avg.ratio, worstSpotN:avg.n, worstBar:avg.bar,
       spotsAveraged:avg.count, spotLosses:picked.map(p => p.pick.loss), spotSpread:avg.spread,
       worstSpotPhoto:worst.name,
@@ -942,9 +1056,14 @@ async function saveReading(){
     const at = STATE.readings.findIndex(x => x.id === id);
     if (at >= 0) STATE.readings[at] = r; else STATE.readings.unshift(r);
     shareCache.delete(id);
+    let next = null;
+    if (!old){                                  // a new reading: remember its crates per row and move on to the next location
+      if (r.perRow && r.site && r.barn) STATE.perRowMemo[perRowKey(r.site, r.barn)] = r.perRow;
+      next = advanceLocation(r);
+    }
     persist();
-    STATE.photos = []; STATE.editing = null; renderEdit(); renderPhotos(); renderResult(); renderSaved();
-    toast((old ? "Updated " : "Saved ") + locLabel(r) + ": " + BAND_TEXT[r.band]);
+    STATE.photos = []; STATE.editing = null; renderEdit(); renderPhotos(); renderResult(); renderSaved(); updateLocUI();
+    toast((old ? "Updated " : "Saved ") + locLabel(r) + ": " + BAND_TEXT[r.band] + (next ? ". Next: " + next : ""));
     if (old && ed.from && ed.from !== "#/measure" && VIEW.name === "measure") go(ed.from);
     sync();
   } finally { saving = false; }
@@ -1048,6 +1167,7 @@ function renderEdit(){
   const bar = $("#editBar"), ed = STATE.editing;
   bar.hidden = !ed; bar.innerHTML = "";
   for (const id of Object.keys(LOC_FIELDS)) $("#" + id).disabled = !!ed;
+  updateLocUI();
   if (!ed) return;
   const r = ed.base;
   bar.appendChild(el("div", {class:"hdr"}, [el("h2", {text:"Editing spots"}), el("button", {class:"btn", text:"Cancel edit", onclick:discardReading})]));
@@ -1094,9 +1214,10 @@ async function editSpots(e){
     }
     for (const p of STATE.photos) if (p.img && p.img.close) p.img.close();
     STATE.photos = []; STATE.editing = {base, dir, from:location.hash || "#/"};
-    Object.assign(STATE.loc, {site:base.site || "", barn:base.barn || "", room:base.room || "", row:base.row || "", crate:base.crate || "", note:base.note || ""});
+    Object.assign(STATE.loc, {site:base.site || "", barn:base.barn || "", room:base.room || "", row:base.row || "", crate:base.crate || "", perRow:base.perRow ? String(base.perRow) : "", note:base.note || ""});
+    STATE.locKey = locKeyNow();
     for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
-    persist(); renderEdit();
+    persist(); renderEdit(); updateLocUI();
     base.photos.forEach((p, i) => addFiles([new File([blobs[i]], p.name || "Photo " + (i + 1), {type:blobs[i].type || "image/jpeg"})],
       {tilt:p.tilt && p.tilt.source === "sensor" ? p.tilt : null, source:p.source || "file", restore:p.pick, orig:originalOf(base, i)}));
     $("#toast").classList.remove("show");
@@ -1170,14 +1291,15 @@ async function shareMarked(r){
 const csvCell = v => { const s = v == null ? "" : String(v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
 const pct1 = v => v == null ? "" : (100 * v).toFixed(1);
 // readings oldest first
-function csvFor(readings){
-  const head = ["Site","Barn","Room","Row","Crates from front of room","Note","Cross-section loss band","Worst spot width loss %",
+function csvFor(readings, pool){
+  pool = pool || readings;                       // what "last visit" is looked up in: the readings of the site, whichever iPad saved them
+  const head = ["Site","Barn","Room","Row","Crates from front of room","Crates per row","Side","Last visit","Note","Cross-section loss band","Worst spot width loss %",
                 "Photos averaged","Each photo's worst spot %","Spread between photos %",
                 "Readings at worst spot","Worst bar overall width loss %","Worst spot photo","Typical width loss %",
                 "Windows measured","Windows total","Photos","Baseline ratio","Saved","Saved by","Edited","Worst spot photo tilt across bars (deg)",
                 "Bar spacing in photo (px)"];
   const worstPhoto = r => r.photos.find(q => q.pick && q.name === r.worstSpotPhoto) || r.photos.find(q => q.pick) || {};
-  const rows = readings.map(r => { const w = worstPhoto(r); return [r.site, r.barn, r.room, r.row, r.crate || r.side, r.note, BAND_TEXT[r.band],
+  const rows = readings.map(r => { const w = worstPhoto(r); return [r.site, r.barn, r.room, r.row, r.crate || r.side, r.perRow || "", r.crate && r.perRow ? r.side || "" : "", (lv => lv ? fmtDay(lv.savedAt) + ": " + BAND_TEXT[lv.band] : "")(lastVisit(r, pool)), r.note, BAND_TEXT[r.band],
     pct1(r.worstSpot), r.spotsAveraged || 1, (r.spotLosses || [r.worstSpot]).map(pct1).join("; "), pct1(r.spotSpread),
     r.worstSpotN, pct1(r.worstBar), r.worstSpotPhoto, pct1(r.typical), r.used, r.total,
     r.photos.map(p => p.name).join("; "), r.baseline, new Date(r.savedAt).toLocaleString(), r.by || "",
@@ -1189,7 +1311,7 @@ function exportCSV(){
   const sites = [...new Set(STATE.readings.map(r => r.site).filter(Boolean))];
   const fn = "Tribar readings" + (sites.length === 1 ? " - " + sites[0].replace(/[\\/:*?"<>|]+/g, "-") : "") +
              " - " + new Date().toISOString().slice(0, 10) + ".csv";
-  shareOrDownload(fn, new Blob([csvFor(STATE.readings.slice().reverse())], {type:"text/csv"}), "text/csv");
+  shareOrDownload(fn, new Blob([csvFor(STATE.readings.slice().reverse(), poolOf())], {type:"text/csv"}), "text/csv");
 }
 
 /* ------------------------------------------------------------------ *
@@ -1512,7 +1634,7 @@ async function takeCameraPhoto(){
  *    #/site/<name>  one site's readings
  *    #/measure      take a reading
  * ------------------------------------------------------------------ */
-const VIEW = {name:"dash", site:""};
+const VIEW = {name:"dash", site:"", sheetAll:false};
 const TEAM = {index:null, busy:false, error:null, tab:"all", q:"", loaded:false};
 const BANDS = Object.keys(BAND_COLORS);                    // lowest loss first
 
@@ -1674,7 +1796,8 @@ function renderDash(){
 /* ---------------- one site ---------------- */
 // Readings in walking order: barn, room, row, crate, then oldest first
 const natural = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, {numeric:true, sensitivity:"base"});
-const byLocation = (a, b) => natural(a.r.barn, b.r.barn) || natural(a.r.room, b.r.room) || natural(a.r.row, b.r.row) ||
+const sideRank = r => sideOfReading(r) === "Back" ? 1 : 0;
+const byLocation = (a, b) => natural(a.r.barn, b.r.barn) || natural(a.r.room, b.r.room) || natural(a.r.row, b.r.row) || sideRank(a.r) - sideRank(b.r) ||
                              natural(a.r.crate || a.r.side, b.r.crate || b.r.side) || String(a.r.savedAt).localeCompare(String(b.r.savedAt));
 function renderSitePage(){
   const key = TribarSync.siteKey(VIEW.site);
@@ -1689,6 +1812,9 @@ function renderSitePage(){
     el("div", {class:"acts"}, [
       el("button", {class:"btn", text:past ? "Reopen" : "✓ Mark complete", onclick:() => markSite(s, past ? "current" : "past")}),
       s.readings.length ? el("button", {class:"btn", text:"⬇ CSV", onclick:() => siteCsv(s)}) : null,
+      s.readings.length ? el("button", {class:"btn", id:"sheetBtn", text:"🖨 Photo sheet", onclick:() => photoSheet(s, VIEW.sheetAll)}) : null,
+      s.readings.length ? el("label", {class:"chk", title:"Every marked-up photo of every reading, not just the one with the worst spot"}, [
+        el("input", Object.assign({type:"checkbox", id:"sheetAll", onchange:ev => { VIEW.sheetAll = ev.target.checked; }}, VIEW.sheetAll ? {checked:""} : {})), "all photos"]) : null,
       el("button", {class:"btn danger", text:"🗑 Delete site", onclick:() => deleteSite(s)}),
       el("a", {class:"btn", href:TribarSync.dropboxUrl(s.name), target:"_blank", rel:"noopener", text:"Open in Dropbox"}),
       el("button", {class:"btn primary big", text:"+ New reading here", onclick:() => newReadingAt(s.name)}),
@@ -1705,12 +1831,13 @@ function renderSitePage(){
   }
   box.appendChild(el("div", {class:"legend"}, BANDS.filter(b => s.readings.some(e => e.r.band === b)).map(b =>
     el("span", {}, [el("i", {style:"background:" + BAND_COLORS[b]}), BAND_TEXT[b] + ": " + s.readings.filter(e => e.r.band === b).length]))));
-  const tb = el("tbody");
+  const tb = el("tbody"), pool = s.readings.map(e => e.r).concat(poolOf());
   for (const e of s.readings.slice().sort(byLocation)){
-    const r = e.r, marked = (r.files || []).filter(f => f.kind === "marked" && !f.lost);
+    const r = e.r, marked = (r.files || []).filter(f => f.kind === "marked" && !f.lost), lv = lastVisit(r, pool);
     tb.appendChild(el("tr", {}, [
       td("Location", [el("b", {text:locLabel(r)}), r.note ? el("span", {class:"small", text:r.note}) : null], "lead"),
-      td("Loss", [bandChip(r.band)]),
+      td("Loss", [bandChip(r.band), lv ? el("span", {class:"small", text:lastVisitText(lv)}) : null,
+                  betterThan(r.band, lv) ? el("span", {class:"small", style:"color:var(--danger);font-weight:600", text:BETTER_NOTE}) : null]),
       td("Worst spot", [r.worstSpot != null ? pct(r.worstSpot) : "—",
         r.spotsAveraged > 1 ? el("span", {class:"small", text:"avg of " + r.spotsAveraged + ", spread " + pts(r.spotSpread)}) : el("span", {class:"small", text:"1 photo"})]),
       td("That bar", [r.worstBar != null ? pct(r.worstBar) : "—"]),
@@ -1725,9 +1852,9 @@ function renderSitePage(){
 function newReadingAt(site){
   if (STATE.editing){ toast("You’re editing a reading. Save or cancel the edit first."); return go("#/measure"); }
   if (site && TribarSync.siteKey(STATE.loc.site) !== TribarSync.siteKey(site)){      // another site: its own barns and rooms
-    Object.assign(STATE.loc, {site, barn:"", room:"", row:"", crate:"", note:""});
+    Object.assign(STATE.loc, LOC_BLANK, {site}); STATE.locKey = locKeyNow();
     for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
-    persist(); renderResult();
+    persist(); renderResult(); updateLocUI();
   }
   go("#/measure");
 }
@@ -1736,9 +1863,9 @@ function newReadingAt(site){
 function newSite(){
   if (STATE.editing){ toast("You’re editing a reading. Save or cancel the edit first."); return go("#/measure"); }
   if (!STATE.photos.length){
-    Object.assign(STATE.loc, {site:"", barn:"", room:"", row:"", crate:"", note:""});
+    Object.assign(STATE.loc, LOC_BLANK); STATE.locKey = null;
     for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
-    persist(); renderResult();
+    persist(); renderResult(); updateLocUI();
   }
   go("#/measure");
 }
@@ -1753,7 +1880,7 @@ async function markSite(s, status){
 function siteCsv(s){
   const rows = s.readings.map(e => e.r).sort((a, b) => String(a.savedAt).localeCompare(String(b.savedAt)));
   shareOrDownload("Tribar readings - " + TribarSync.folderName(s.name) + " - " + new Date().toISOString().slice(0, 10) + ".csv",
-                  new Blob([csvFor(rows)], {type:"text/csv"}), "text/csv");
+                  new Blob([csvFor(rows, s.readings.map(e => e.r))], {type:"text/csv"}), "text/csv");
 }
 
 /* ---------------- deleting a site or a reading (sync.js has the Dropbox side) ---------------- */
@@ -1804,6 +1931,62 @@ async function deleteSite(s){
   } finally { DELETING = false; }
 }
 
+/* ---------------- photo sheet: a PDF for the letter ----------------
+   A title with the site and the dates, then the marked-up photo of each reading (the one with its worst tapped spot, or
+   all of them), two to a page, in walking order. The photos are the ones kept on this iPad, else downloaded from Dropbox;
+   the PDF is written by pdf.js (no library, nothing from a CDN), so readings on the iPad work with no signal. */
+let sheetBusy = false;
+// [file, number among the reading's photos] of the marked-up photos to use for a reading
+function sheetFiles(r, all){
+  const marked = (r.files || []).filter(f => f.kind === "marked" && !f.lost).map(f => [f, +((/^marked (\d+)/.exec(f.suffix) || [])[1]) || 0]).sort((a, b) => a[1] - b[1]);
+  if (all || marked.length < 2) return marked;
+  let i = r.photos.findIndex(q => q.pick && q.name === r.worstSpotPhoto);
+  if (i < 0) i = r.photos.findIndex(q => q.pick);
+  return [marked.find(m => m[1] === i + 1) || marked[0]];
+}
+async function sheetBlob(e, f, online){
+  const mine = e.local && (e.local.files || []).find(x => x.suffix === f.suffix && x.key);
+  let blob = mine ? await TribarSync.IDB.get(mine.key).catch(() => null) : null;
+  if (!blob && online && f.dropboxName){
+    try{ blob = await TribarSync.teamFile(e.dir || await TribarSync.readingDir(e.r.site), f.dropboxName); }catch(err){ blob = null; }
+  }
+  return blob;
+}
+function dateRange(list){
+  const t = list.map(x => Date.parse(x)).filter(Number.isFinite).sort((a, b) => a - b); if (!t.length) return "";
+  const lo = new Date(t[0]), hi = new Date(t[t.length - 1]);
+  if (lo.toDateString() === hi.toDateString()) return fmtDay(lo.toISOString());
+  return lo.getFullYear() === hi.getFullYear() ? lo.toLocaleDateString([], {month:"short", day:"numeric"}) + " – " + fmtDay(hi.toISOString()) : fmtDay(lo.toISOString()) + " – " + fmtDay(hi.toISOString());
+}
+async function photoSheet(s, all){
+  if (typeof TribarPdf === "undefined") return toast("The photo sheet isn’t ready. Close the app and open it again with signal to finish updating it.");
+  if (sheetBusy) return;
+  sheetBusy = true;
+  try{
+    toast("Building the photo sheet…");
+    const online = TribarSync.signedIn() && navigator.onLine !== false, items = [], dates = [];
+    let used = 0, left = 0;
+    for (const e of s.readings.slice().sort(byLocation)){
+      const r = e.r, files = sheetFiles(r, all); let got = 0;
+      for (const [f, n] of files){
+        const blob = await sheetBlob(e, f, online); if (!blob) continue;
+        const own = r.photos[n - 1] && r.photos[n - 1].pick;
+        items.push({jpeg:new Uint8Array(await blob.arrayBuffer()),
+          heading:locLabel(r) + (all && files.length > 1 ? " · photo " + n + (own ? ": " + pct(own.loss) : "") : r.worstSpot != null ? " · worst spot " + pct(r.worstSpot) : "")});
+        got++;
+      }
+      if (got){ used++; dates.push(r.savedAt); } else left++;
+    }
+    if (!items.length) return toast("No marked-up photos to put in the sheet." + (online ? "" : " With no signal, only the photos on this iPad can be used."));
+    const notes = left ? [left + " reading" + (left === 1 ? "" : "s") + " left out: " + (left === 1 ? "its" : "their") + " marked-up photo" + (left === 1 ? " isn’t" : "s aren’t") +
+                          " on this iPad and " + (online ? "couldn’t be downloaded." : "there is no signal to download " + (left === 1 ? "it." : "them."))] : [];
+    const built = TribarPdf.build({title:"Tribar corrosion photos", subtitle:[s.name, dateRange(dates), used + " reading" + (used === 1 ? "" : "s")].filter(Boolean).join(" · "),
+      notes, items, perPage:2, footer:"Johnson Engineering Group · " + s.name});
+    const day = new Date().toISOString().slice(0, 10);
+    await shareOrDownload("Tribar photo sheet - " + TribarSync.folderName(s.name) + " - " + day + ".pdf", new Blob([built.pdf], {type:"application/pdf"}), "application/pdf");
+  } finally { sheetBusy = false; }
+}
+
 /* ---------------- the marked-up photo viewer ---------------- */
 const LB = {files:[], urls:[], i:0};
 async function openPhotos(e){
@@ -1840,7 +2023,7 @@ async function sharePhoto(){
   downloadBlob(f.name, f);
 }
 
-const LOC_FIELDS = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate:"crate", fNote:"note"};
+const LOC_FIELDS = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fPerRow:"perRow", fCrate:"crate", fNote:"note"};
 
 // This page and sync.js have to come from the same release. For a few minutes after an update a browser can pair
 // the new page with its cached copy of the old sync.js (GitHub Pages lets browsers keep files for 10 minutes), which
@@ -1851,7 +2034,7 @@ function scriptsMatch(){
   let tried = true;
   try{ tried = sessionStorage.getItem("tribar.refetched") === "1"; sessionStorage.setItem("tribar.refetched", "1"); }catch(e){}
   if (tried) return false;                                   // already tried (no signal?): carry on with what's here
-  Promise.all(["./", "./index.html", "./sync.js", "./tribar.js", "./worker.js"].map(u => fetch(u, {cache:"reload"}).catch(() => null)))
+  Promise.all(["./", "./index.html", "./sync.js", "./pdf.js", "./tribar.js", "./worker.js"].map(u => fetch(u, {cache:"reload"}).catch(() => null)))
     .then(() => location.reload());
   return null;
 }
@@ -1860,11 +2043,11 @@ function init(){
   const match = scriptsMatch();
   if (match === null) return;                                // reloading with fresh files
   if (match === false) setTimeout(() => toast("The app didn’t finish updating. Close it and open it again with signal."), 500);
-  restore();
+  restore(); STATE.locKey = locKeyNow();
   for (const [id, key] of Object.entries(LOC_FIELDS)){
     const input = $("#" + id); input.value = STATE.loc[key] || "";
     input.addEventListener(input.tagName === "SELECT" ? "change" : "input", () => {
-      STATE.loc[key] = input.value.trim(); persist(); showSite(); renderResult(); if (key === "site") renderCrumbs();
+      STATE.loc[key] = input.value.trim(); locEdited(key); persist(); showSite(); renderResult(); if (key === "site") renderCrumbs();
     });
   }
   showSite();
@@ -1905,7 +2088,8 @@ function init(){
   $("#lbShare").addEventListener("click", sharePhoto);
   document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#lightbox").hidden) closePhotos(); });
   window.addEventListener("hashchange", route);
-  renderPhotos(); renderResult(); renderSaved(); renderEdit();
+  $("#sameLocBtn").addEventListener("click", sameLocation);
+  renderPhotos(); renderResult(); renderSaved(); renderEdit(); updateLocUI();
   if (TribarSync.loadDeleted) TribarSync.loadDeleted().then(() => { announceRemoved(TribarSync.purge(STATE.readings)); redrawTeamViews(); }).catch(() => {});
   try{ route(); }catch(e){ console.error(e); }               // a page that can't draw mustn't stop Dropbox starting
   TribarSync.init().catch(e => ({error:e.message})).then(({error}) => {
