@@ -1032,7 +1032,7 @@ async function main() {
     const standIn = pg => pg.evaluate(() => { window.__opened = []; window.open = (url, target) => { const w = {closed: false, url, target, location: {href: ""}, document: {title: "", body: {textContent: ""}}, close() { this.closed = true; }}; __opened.push(w); return w; }; });
     const sheet = async (pg, all) => {
       await standIn(pg);
-      await pg.evaluate(all => { document.querySelector("#sheetAll").checked = all; VIEW.sheetAll = all; }, !!all);
+      await pg.evaluate(worst => { document.querySelector("#sheetWorst").checked = worst; VIEW.sheetWorst = worst; }, !!all);       // all: "worst photo only" is ticked
       await pg.click("#sheetBtn");
       await pg.waitForFunction(() => __opened.length && /^blob:/.test(__opened[0].location.href), null, {timeout: 60000});
       const b64 = await pg.evaluate(async () => { const blob = await (await fetch(__opened[0].location.href)).blob(); return new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(blob); }); });
@@ -1045,30 +1045,31 @@ async function main() {
       mine.map(([r, files]) => [r, files.map(f => fs.readFileSync(path.join(PHOTOS, f)).toString("base64"))]));
     await settled(p1);
     await p1.evaluate(() => { location.hash = "#/site/" + encodeURIComponent("Sheet Farm"); }); await p1.waitForFunction(() => VIEW.name === "site" && document.querySelectorAll("#siteView tbody tr").length === 5);
-    ok(await p1.isVisible("#sheetBtn") && await p1.isVisible("#sheetAll"), "the site page has a Photo sheet button and an all photos option");
+    ok(await p1.isVisible("#sheetBtn") && await p1.isVisible("#sheetWorst") && !await p1.$eval("#sheetWorst", c => c.checked) && /worst photo only/.test(await p1.innerText(".chk")), "the site page has a Photo sheet button, and a \"worst photo only\" option that is off");
     const sha = Object.fromEntries(["far-off.jpg", "spot-1.jpg", "spot-2.jpg", "spot-3.jpg", "low-amber.jpg", "low-red.jpg"].map(n => [n, sha1File(n)]));
     const order = ["Barn 0 · Room 3", "Barn 1 · Room 1 · Row 2 · Crate 5", "Barn 1 · Room 1 · Row 2 · Crate 14", "Barn 1 · Room 1 · Row 3", "Barn 1 · Room 2"];
     const headings = a => a.text.filter(t => /Barn \d/.test(t));
     /* online: this iPad's photos from the iPad, the other iPad's reading downloaded from Dropbox */
     const dl0 = D11.log.filter(l => l.endpoint === "files/download").length;
+    const ALL = ["far-off.jpg", "low-red.jpg", "spot-1.jpg", "spot-2.jpg", "low-red.jpg", "spot-3.jpg", "low-amber.jpg", "low-red.jpg"].map(n => sha[n]);     // every photo, reading by reading
     let r1 = await sheet(p1, false), a = pdfAnalyze(r1.buf);
     if (SHOTS) fs.writeFileSync(path.join(SHOTS, "sheet.pdf"), r1.buf);
-    ok(a.valid && a.pages === 3 && a.images.length === 5, "the PDF is well formed: 5 photos (one per reading), 2 to a page, 3 pages");
-    ok(a.images.join() === [sha["far-off.jpg"], sha["spot-1.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"], sha["low-red.jpg"]].join(), "each reading's photo is the one with its worst tapped spot");
-    ok(headings(a).length === 5 && order.every((o, i) => headings(a)[i].startsWith(o)), "in walking order (barn, room, row, side): " + headings(a).map(t => t.slice(0, 34)).join(" | "));
+    ok(a.valid && a.pages === 8 && a.images.join() === ALL.join(), "the PDF is well formed and has every photo of every reading, one to a page: 8 photos, 8 pages");
+    { const seq = [0, 1, 1, 1, 2, 2, 3, 4];
+      ok(headings(a).length === 8 && seq.every((k, i) => headings(a)[i].startsWith(order[k])), "in walking order (barn, room, row, side): " + headings(a).map(t => t.slice(0, 34)).join(" | "));
+      ok(headings(a).filter(t => /photo \d: /.test(t)).length === 5 && /Barn 0 .* worst spot 15\.0%$/.test(headings(a)[0]), "a reading with several photos says which one each is"); }
     ok(a.text[0] === "Tribar corrosion photos" && /^Sheet Farm · Nov 2 – Nov 17, 2026 · 5 readings$/.test(a.text[1]), "the title has the site and the dates: " + a.text.slice(0, 2).join(" / "));
     ok(r1.opened.length === 1 && r1.opened[0].target === "_blank" && r1.opened[0].url === "" && !r1.opened[0].closed, "the PDF opens in a new tab straight from the tap, not in a share dialog (one tab opened, kept open)");
-    ok(D11.log.slice(dl0).filter(l => l.endpoint === "files/download").map(l => JSON.parse(l.headers["dropbox-api-arg"]).path).filter(x => /shE marked 1\.jpg$/.test(x)).length === 1, "the other iPad's photo came from Dropbox, this iPad's from the iPad");
-    /* all photos */
+    ok(D11.log.slice(dl0).filter(l => l.endpoint === "files/download").map(l => JSON.parse(l.headers["dropbox-api-arg"]).path).filter(x => /shE marked 1\.jpg$/.test(x)).length === 1, "the other device's photo came from Dropbox, this device's from the device");
+    /* worst photo only */
     r1 = await sheet(p1, true); a = pdfAnalyze(r1.buf);
-    ok(a.valid && a.pages === 4 && a.images.join() === [sha["far-off.jpg"], sha["low-red.jpg"], sha["spot-1.jpg"], sha["spot-2.jpg"], sha["low-red.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"], sha["low-red.jpg"]].join(),
-       "all photos: 8 photos, in order, 4 pages");
-    ok(headings(a).some(t => /photo 2: /.test(t)), "each says which photo of its reading it is");
+    ok(a.valid && a.pages === 5 && a.images.join() === [sha["far-off.jpg"], sha["spot-1.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"], sha["low-red.jpg"]].join(),
+       "worst photo only: each reading's photo with its worst tapped spot, 5 photos, 5 pages");
     /* no signal: this iPad's readings still work; the one only in Dropbox is left out, and the PDF says so */
     await S1.c.setOffline(true);
     r1 = await sheet(p1, false); a = pdfAnalyze(r1.buf);
-    ok(a.valid && a.pages === 2 && a.images.join() === [sha["far-off.jpg"], sha["spot-1.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"]].join() && /^1 reading left out: its marked-up photo isn’t on this device and there is no signal to download it\.$/.test(a.text.slice(2, a.text.findIndex(t => /Barn \d/.test(t))).join(" ")),
-       "no signal: the 4 readings on the iPad are in it, the 5th is left out and the PDF says why" + " — " + JSON.stringify({valid: a.valid, pages: a.pages, images: a.images.map(h => Object.keys(sha).find(k => sha[k] === h)), text: a.text.slice(0, 4)}));
+    ok(a.valid && a.pages === 7 && a.images.join() === ALL.slice(0, 7).join() && /^1 reading left out: its marked-up photo isn’t on this device and there is no signal to download it\.$/.test(a.text.slice(2, a.text.findIndex(t => /Barn \d/.test(t))).join(" ")),
+       "no signal: the 4 readings on the device are in it (7 photos), the 5th is left out and the PDF says why" + " — " + JSON.stringify({valid: a.valid, pages: a.pages, images: a.images.map(h => Object.keys(sha).find(k => sha[k] === h)), text: a.text.slice(0, 4)}));
     ok(!S1.pg.errs.length, "no page errors" + S1.pg.errs.join("; "));
     await S1.c.close();
     /* a second iPad with none of the photos: everything from Dropbox; with no signal, nothing */
@@ -1076,9 +1077,9 @@ async function main() {
     await p2.goto(APP + "#/site/" + encodeURIComponent("Sheet Farm")); await settled(p2);
     await p2.waitForFunction(() => document.querySelectorAll("#siteView tbody tr").length === 5);
     r1 = await sheet(p2, false); a = pdfAnalyze(r1.buf);
-    ok(a.valid && a.images.join() === [sha["far-off.jpg"], sha["spot-1.jpg"], sha["spot-3.jpg"], sha["low-amber.jpg"], sha["low-red.jpg"]].join(), "another iPad: all the photos downloaded from Dropbox");
+    ok(a.valid && a.pages === 8 && a.images.join() === ALL.join(), "another device: all the photos downloaded from Dropbox");
     await S2.c.setOffline(true);
-    await p2.evaluate(() => { document.querySelector("#sheetAll").checked = false; });
+    await p2.evaluate(() => { document.querySelector("#sheetWorst").checked = false; });
     await standIn(p2);
     await p2.click("#sheetBtn"); await p2.waitForFunction(() => /No marked-up photos/.test(document.querySelector("#toast").textContent), null, {timeout: 20000});
     ok(await p2.evaluate(() => __opened.length === 1 && __opened[0].closed), "and the tab it opened is closed again when there's nothing to show");
@@ -1087,9 +1088,31 @@ async function main() {
     await p2.evaluate(() => { window.open = () => null; });                                        // popups blocked
     { const [dl] = await Promise.all([p2.waitForEvent("download"), p2.click("#sheetBtn")]);
       const buf = fs.readFileSync(await dl.path());
-      ok(pdfAnalyze(buf).valid && pdfAnalyze(buf).images.length === 5, "a browser that blocks the new tab gets the PDF as a download instead"); }
+      ok(pdfAnalyze(buf).valid && pdfAnalyze(buf).images.length === 8 && /^Tribar photo sheet - Sheet Farm - \d{4}-\d\d-\d\d\.pdf$/.test(dl.suggestedFilename()), "a browser that blocks the new tab gets the PDF as a download, with its name: " + dl.suggestedFilename()); }
     ok(!S2.pg.errs.length, "no page errors" + S2.pg.errs.join("; "));
     await S2.c.close();
+  }
+
+  /* ---- the photo sheet's address carries its name (the browser names the file from it) ---- */
+  {
+    const c = await browser.newContext({viewport: {width: 1100, height: 900}});                  // service workers allowed
+    const rdg = (id, n) => ({id, savedAt: "2026-11-1" + n + "T15:00:00.000Z", site: "Name Farm", barn: "B", room: "1", row: "1", crate: String(n), perRow: 24, side: "Front", band: "10-20%", worstSpot: 0.15, by: "I",
+      worstSpotPhoto: "p1.jpg", photos: [{name: "p1.jpg", pick: {loss: 0.15}}], files: [{key: id + "/m1", kind: "marked", photo: "p1.jpg", suffix: "marked 1.jpg"}], synced: false});
+    await c.addInitScript(rs => { if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: rs})); }, [rdg("nm1", 1), rdg("nm2", 2)]);
+    const q = await c.newPage(); const errs = []; q.on("pageerror", e => errs.push(e.message));
+    await q.goto(APP);
+    await q.waitForFunction(() => navigator.serviceWorker && navigator.serviceWorker.controller, null, {timeout: 20000});
+    await q.evaluate(async b64 => { for (const id of ["nm1", "nm2"]) await TribarSync.IDB.put(id + "/m1", new Blob([Uint8Array.from(atob(b64), c => c.charCodeAt(0))], {type: "image/jpeg"})); }, fs.readFileSync(path.join(PHOTOS, "spot-1.jpg")).toString("base64"));
+    await q.evaluate(() => { location.hash = "#/site/" + encodeURIComponent("Name Farm"); }); await q.waitForFunction(() => VIEW.name === "site" && document.querySelector("#sheetBtn"));
+    await q.evaluate(() => { window.__opened = []; window.open = (url, target) => { const w = {closed: false, url, target, location: {href: ""}, document: {title: "", body: {textContent: ""}}, close() { this.closed = true; }}; __opened.push(w); return w; }; });
+    await q.click("#sheetBtn");
+    await q.waitForFunction(() => __opened.length && __opened[0].location.href, null, {timeout: 30000});
+    const href = await q.evaluate(() => __opened[0].location.href);
+    ok(new RegExp("^" + APP.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "photo-sheet/Tribar%20photo%20sheet%20-%20Name%20Farm%20-%20\\d{4}-\\d\\d-\\d\\d\\.pdf$").test(href), "with the service worker running, the PDF is opened at an address ending in its name: …" + href.slice(APP.length - 1));
+    const got = await q.evaluate(async h => { const r = await fetch(h); const b = await r.blob(); return {status: r.status, type: r.headers.get("content-type"), disp: r.headers.get("content-disposition"), size: b.size, head: await b.slice(0, 5).text()}; }, href);
+    ok(got.status === 200 && got.type === "application/pdf" && got.head === "%PDF-" && /^inline; filename\*=UTF-8''Tribar%20photo%20sheet%20-%20Name%20Farm/.test(got.disp), "the service worker answers that address with the PDF and its file name (" + got.type + ", " + got.size + " bytes)");
+    ok(!errs.length, "no page errors" + errs.join("; "));
+    await c.close();
   }
 
   /* ---- a new page with the browser's cached copy of the previous sync.js ---- */

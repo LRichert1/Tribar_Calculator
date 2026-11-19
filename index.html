@@ -1679,7 +1679,7 @@ async function takeCameraPhoto(){
  *    #/site/<name>  one site's readings
  *    #/measure      take a reading
  * ------------------------------------------------------------------ */
-const VIEW = {name:"dash", site:"", sheetAll:false};
+const VIEW = {name:"dash", site:"", sheetWorst:false};
 const TEAM = {index:null, busy:false, error:null, tab:"all", q:"", loaded:false};
 const BANDS = Object.keys(BAND_COLORS);                    // lowest loss first
 
@@ -1858,9 +1858,9 @@ function renderSitePage(){
     el("div", {class:"acts"}, [
       el("button", {class:"btn", text:past ? "Reopen" : "✓ Mark complete", onclick:() => markSite(s, past ? "current" : "past")}),
       s.readings.length ? el("button", {class:"btn", text:"⬇ CSV", onclick:() => siteCsv(s)}) : null,
-      s.readings.length ? el("button", {class:"btn", id:"sheetBtn", text:"🖨 Photo sheet", onclick:() => photoSheet(s, VIEW.sheetAll)}) : null,
-      s.readings.length ? el("label", {class:"chk", title:"Every marked-up photo of every reading, not just the one with the worst spot"}, [
-        el("input", Object.assign({type:"checkbox", id:"sheetAll", onchange:ev => { VIEW.sheetAll = ev.target.checked; }}, VIEW.sheetAll ? {checked:""} : {})), "all photos"]) : null,
+      s.readings.length ? el("button", {class:"btn", id:"sheetBtn", text:"🖨 Photo sheet", onclick:() => photoSheet(s, !VIEW.sheetWorst)}) : null,
+      s.readings.length ? el("label", {class:"chk", title:"Only the photo with the worst tapped spot of each reading, instead of every photo"}, [
+        el("input", Object.assign({type:"checkbox", id:"sheetWorst", onchange:ev => { VIEW.sheetWorst = ev.target.checked; }}, VIEW.sheetWorst ? {checked:""} : {})), "worst photo only"]) : null,
       el("button", {class:"btn danger", text:"🗑 Delete site", onclick:() => deleteSite(s)}),
       el("a", {class:"btn", href:TribarSync.dropboxUrl(s.name), target:"_blank", rel:"noopener", text:"Open in Dropbox"}),
       el("button", {class:"btn primary big", text:"+ New reading here", onclick:() => newReadingAt(s.name)}),
@@ -2004,6 +2004,21 @@ function dateRange(list){
   if (lo.toDateString() === hi.toDateString()) return fmtDay(lo.toISOString());
   return lo.getFullYear() === hi.getFullYear() ? lo.toLocaleDateString([], {month:"short", day:"numeric"}) + " – " + fmtDay(hi.toISOString()) : fmtDay(lo.toISOString()) + " – " + fmtDay(hi.toISOString());
 }
+// The address the PDF is opened at. The browser names the file from the last part of it, so with the service worker running it
+// is served at .../photo-sheet/<its name> (the worker answers from a cache the PDF is put in); otherwise a blob: address,
+// which the browser names with a random string.
+async function sheetUrl(name, blob){
+  try{
+    if (navigator.serviceWorker && navigator.serviceWorker.controller && window.caches){
+      const c = await caches.open("photo-sheets");
+      for (const k of await c.keys()) await c.delete(k);                       // only the latest sheet is kept
+      const url = new URL("./photo-sheet/" + encodeURIComponent(name), location.href).href;
+      await c.put(url, new Response(blob, {headers:{"Content-Type":"application/pdf", "Content-Disposition":"inline; filename*=UTF-8''" + encodeURIComponent(name)}}));
+      return url;
+    }
+  }catch(e){ /* fall back to a blob: address */ }
+  return URL.createObjectURL(blob);
+}
 async function photoSheet(s, all){
   if (typeof TribarPdf === "undefined") return toast("The photo sheet isn’t ready. Close the app and open it again with signal to finish updating it.");
   if (sheetBusy) return;
@@ -2032,13 +2047,13 @@ async function photoSheet(s, all){
     const notes = left ? [left + " reading" + (left === 1 ? "" : "s") + " left out: " + (left === 1 ? "its" : "their") + " marked-up photo" + (left === 1 ? " isn’t" : "s aren’t") +
                           " on this device and " + (online ? "couldn’t be downloaded." : "there is no signal to download " + (left === 1 ? "it." : "them."))] : [];
     const built = TribarPdf.build({title:"Tribar corrosion photos", subtitle:[s.name, dateRange(dates), used + " reading" + (used === 1 ? "" : "s")].filter(Boolean).join(" · "),
-      notes, items, perPage:2, footer:"Johnson Engineering Group · " + s.name});
+      notes, items, perPage:1, footer:"Johnson Engineering Group · " + s.name});
     const name = "Tribar photo sheet - " + TribarSync.folderName(s.name) + " - " + new Date().toISOString().slice(0, 10) + ".pdf", blob = new Blob([built.pdf], {type:"application/pdf"});
     if (win && !win.closed){
-      const url = URL.createObjectURL(blob);
+      const url = await sheetUrl(name, blob);
       win.location.href = url;
       toast("The photo sheet is open in another tab.");
-      setTimeout(() => URL.revokeObjectURL(url), 10 * 60e3);
+      if (/^blob:/.test(url)) setTimeout(() => URL.revokeObjectURL(url), 10 * 60e3);
     } else {                                    // the browser wouldn't open a tab: download it
       downloadBlob(name, blob);
       toast("Downloaded " + name);
