@@ -875,6 +875,11 @@ async function main() {
     await z.goto(APP + "#/measure");
     for (const [id, v] of [["#fSite", "Side Farm"], ["#fBarn", "Barn 1"], ["#fRoom", "2"], ["#fRow", "3"], ["#fCrate", "5"], ["#fPerRow", "24"], ["#fNote", "wet floor"]]) await z.fill(id, v);
     ok(/^Front side of the row/.test(await z.textContent("#sideTag")), "crate 5 of 24: " + await z.textContent("#sideTag"));
+    ok(await z.isVisible("#setupHint") && /New barn\? Fill in the barn setup/.test(await z.textContent("#setupHint")), "a new barn without its setup: a hint to fill it in");
+    if (SHOTS) await z.locator("#locCard").screenshot({path: path.join(SHOTS, "location-new-barn.png")});
+    await z.fill("#fRows", "10"); await z.fill("#fRooms", "8");
+    if (SHOTS) await z.locator("#locCard").screenshot({path: path.join(SHOTS, "location.png")});
+    ok(!await z.isVisible("#setupHint") && /Front side of the row.* · Room 2 of 8 · Row 3 of 10$/.test(await z.textContent("#sideTag")), "barn setup complete (8 rooms, 10 rows, 24 crates per row): the hint goes, and the form shows where it is: " + await z.textContent("#sideTag"));
     ok(await z.evaluate(() => [sideOf(12, 24), sideOf(13, 24), sideOf(12, 25), sideOf(13, 25), sideOf("", 24), sideOf(5, "")].join()) === "Front,Back,Front,Back,,", "front side up to half the crates: 12 and 13 of 24 and of 25 split between front and back");
     await addPhotos(z, "spot-1.jpg"); await tap(z, 0);
     ok(await saveOff(z) && await needText(z) === "Saving needs 3 photos with a tapped spot. 2 more photos still need a tapped spot.", "one photo tapped: Save is disabled and says 2 more are needed");
@@ -886,7 +891,7 @@ async function main() {
     ok(!await saveOff(z) && await needText(z) === null, "three photos with a tapped spot: Save is enabled");
     await z.click("#saveBtn"); await z.waitForFunction(() => STATE.readings.length === 1);
     const s1 = await z.evaluate(() => STATE.readings[0]);
-    ok(s1.perRow === 24 && s1.side === "Front" && s1.crate === "5", "the reading keeps crates per row (24) and its side (Front) in the JSON");
+    ok(s1.perRow === 24 && s1.rowsPerRoom === 10 && s1.roomsPerBarn === 8 && s1.side === "Front" && s1.crate === "5", "the reading keeps the barn setup (24 crates per row, 10 rows, 8 rooms) and its side (Front) in the JSON");
     ok(await locNow(z) === "Side Farm|Barn 1|2|3|13|24|", "next location after the front side: the same row, back side, crate 13; site, barn, room kept, the note cleared: " + await locNow(z));
     ok(/Next: Row 3 · Back side · crate 13/.test(await z.textContent("#toast")), "the save message says where next: " + (await z.textContent("#toast")).slice(-40));
     ok(/Front side/.test(await z.textContent("#saved .where")), "the reading list shows the side: " + await z.textContent("#saved .where"));
@@ -898,13 +903,31 @@ async function main() {
     ok(await locNow(z) === "Side Farm|Barn 1|2|3|13|24|", "Same location goes back to the reading just saved (row 3, crate 13): " + await locNow(z));
     // crates per row is remembered per site and barn
     await z.fill("#fBarn", "Barn 2");
-    ok(await val(z, "#fPerRow") === "", "another barn: crates per row is cleared (it was Barn 1's)");
-    await z.fill("#fPerRow", "30"); await z.fill("#fBarn", "Barn 1");
-    ok(await val(z, "#fPerRow") === "24", "back to Barn 1: its 24 comes back");
+    const setupNow = () => z.evaluate(() => ["#fPerRow", "#fRows", "#fRooms"].map(s => document.querySelector(s).value).join("/"));
+    ok(await setupNow() === "//", "another barn: the barn setup is cleared (it was Barn 1's)");
+    await z.fill("#fPerRow", "30"); await z.fill("#fRows", "5"); await z.fill("#fRooms", "3"); await z.fill("#fBarn", "Barn 1");
+    ok(await setupNow() === "24/10/8", "back to Barn 1: its setup comes back");
     await z.fill("#fBarn", "Barn 2");
-    ok(await val(z, "#fPerRow") === "30", "and Barn 2's 30");
+    ok(await setupNow() === "30/5/3", "and Barn 2's");
     await z.reload(); await z.waitForFunction(() => document.querySelector("#fSite").value);
-    ok(await z.evaluate(() => Object.keys(STATE.perRowMemo).sort().join() + "=" + Object.values(STATE.perRowMemo).sort().join()) === "SIDEFARM|barn 1,SIDEFARM|barn 2=24,30", "kept on the iPad across a restart");
+    ok(await z.evaluate(() => Object.entries(STATE.setupMemo).map(([k, v]) => k + ":" + [v.perRow, v.rowsPerRoom, v.roomsPerBarn].join("/")).sort().join()) === "SIDEFARM|barn 1:24/10/8,SIDEFARM|barn 2:30/5/3", "kept on the iPad across a restart");
+    /* Next location with the barn setup: where the rows and the rooms end */
+    const advance = (side, room, row, crate, perRow, rows, rooms) => z.evaluate(([side, room, row, crate, perRow, rows, rooms]) => {
+      for (const [k, v] of Object.entries({site: "Side Farm", barn: "Barn 1", room, row, crate, perRow, rowsPerRoom: rows, roomsPerBarn: rooms, note: "x"})) setLoc(k, v);
+      const out = advanceLocation({site: "Side Farm", barn: "Barn 1", room, row, crate, perRow: toNum(perRow), rowsPerRoom: toNum(rows), roomsPerBarn: toNum(rooms), side, note: "x"});
+      return {out, loc: ["room", "row", "crate", "note"].map(k => STATE.loc[k]).join("|")}; }, [side, room, row, crate, perRow, rows, rooms]);
+    { const a1 = await advance("Front", "1", "1", "5", "24", "3", "2"), a2 = await advance("Back", "1", "2", "13", "24", "3", "2"), a3 = await advance("Back", "1", "3", "20", "24", "3", "2"),
+            a4 = await advance("Back", "2", "3", "20", "24", "3", "2"), a5 = await advance("Back", "1", "9", "13", "24", "", ""), a6 = await advance("Back", "A", "3", "13", "24", "3", "2");
+      ok(a1.out.text === "Row 1 · Back side · crate 13" && a1.loc === "1|1|13|", "front side: the back side of the same row, crate 13");
+      ok(a2.out.text === "Row 3 · Front side · crate 1" && a2.loc === "1|3|1|", "back side before the last row: the next row");
+      ok(a3.out.text === "Room 2 · Row 1 · Front side · crate 1" && a3.loc === "2|1|1|", "back side of the last row (3 rows per room): the first row of the next room");
+      ok(a4.out.done && /last row of the last room: this barn is done/.test(a4.out.text) && a4.loc === "2|3|20|", "the last row of the last room (2 rooms): the barn is done, the location stays");
+      ok(a5.out.text === "Row 10 · Front side · crate 1" && a5.loc === "1|10|1|", "without rows per room it just counts up");
+      ok(/change the room/.test(a6.out.text) && a6.loc === "A|1|1|", "a room that isn't a number: the first row, and it says to change the room"); }
+    // a barn memory saved before the barn setup had three numbers is kept
+    { const c = await browser.newContext({serviceWorkers: "block"}); await c.addInitScript(() => { if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: [], perRow: {"OLDFARM|barn 3": 20}})); });
+      const q = await c.newPage(); await q.goto(APP + "#/measure");
+      ok(await q.evaluate(() => STATE.setupMemo["OLDFARM|barn 3"] && STATE.setupMemo["OLDFARM|barn 3"].perRow === 20), "crates per row remembered before the barn setup existed is kept"); await c.close(); }
     // the CSV and an unrelated reading
     await z.evaluate(() => { window.__csv = null; const orig = downloadBlob; downloadBlob = (n, b) => { window.__csv = b; orig(n, b); }; });
     await Promise.all([z.waitForEvent("download"), z.click("#csvBtn")]);
