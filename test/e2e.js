@@ -155,6 +155,9 @@ async function tapThree(page, ...names) {
   for (let i = 0; i < names.length; i++) { await addPhotos(page, names[i]); losses.push(await tap(page, i)); }
   return losses;
 }
+// The readings saved on this iPad are on their own page (#/saved), not on the measuring page
+async function savedPage(page) { await page.evaluate(() => { location.hash = "#/saved"; }); await page.waitForFunction(() => VIEW.name === "saved"); }
+async function measurePage(page) { await page.evaluate(() => { location.hash = "#/measure"; }); await page.waitForFunction(() => VIEW.name === "measure"); }
 const resultText = page => page.$eval("#resultCard", e => e.innerText);
 const near = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol;
 // CSV text -> rows of cells (quoted cells may hold commas)
@@ -218,6 +221,7 @@ async function main() {
   await page.click("#newReadingBtn");
   await page.waitForFunction(() => VIEW.name === "measure");
   ok(await page.isVisible("#measureView") && page.url().endsWith("#/measure"), "+ New reading opens the measuring page");
+  ok(!await page.isVisible("#saved") && !await page.isVisible("#csvBtn") && !/Saved on this iPad/.test(await page.innerText("#measureView")), "the measuring page has no Saved on this iPad section");
 
   /* ---- averaging ---- */
   for (const [id, v] of [["#fSite", SITE], ["#fBarn", "Farrowing 2"], ["#fRoom", "3"], ["#fRow", "2"], ["#fCrate", "5"]]) await page.fill(id, v);
@@ -266,7 +270,9 @@ async function main() {
   const r1 = await page.evaluate(() => STATE.readings[0]);
   ok(r1.spotsAveraged === 3 && near(r1.worstSpot, mean) && r1.spotLosses.length === 3 && near(r1.spotSpread, spread), "saved reading keeps the average, each photo and the spread");
   ok(r1.files.filter(f => f.kind === "marked").length === 3 && r1.files.filter(f => f.kind === "original").length === 3, "3 marked-up photos and 3 originals kept on the device");
-  ok(!r1.synced && /Not backed up/.test(await page.textContent(".reading .cloud")), "saved reading shows Not backed up");
+  await savedPage(page);
+  ok(!r1.synced && /Not backed up/.test(await page.textContent(".reading .cloud")), "saved reading shows Not backed up (on the Saved on this iPad page)");
+  ok(/^Saved on this iPad/.test(await page.innerText("#savedView h2")) && await page.isVisible("#csvBtn") && await page.isVisible("#clearBtn"), "that page has Export CSV and Clear all");
   const stored = await page.evaluate(() => localStorage.getItem("tribar.v1"));
   ok(!/data:image|base64/.test(stored) && stored.length < 40000, "no photos in localStorage (" + stored.length + " bytes for 2 readings)");
   ok(await page.evaluate(async () => { const b = await TribarSync.IDB.get(STATE.readings[0].files[0].key); return b && b.size > 50000 && b.type === "image/jpeg"; }), "marked-up photo readable back from IndexedDB");
@@ -283,8 +289,9 @@ async function main() {
   ok(shared.length === 3 && shared.every((n, i) => n === "Test Site’s Farm - Farrowing 2 Room 3 Row 2 Crate 5 - marked " + (i + 1) + ".jpg"), "Share (download here, share sheet on the iPad): " + shared.join(" | "));
 
   /* ---- sign in (from the dashboard) ---- */
-  await page.click("#measureCrumbs >> text=‹ Dashboard");
+  await page.click("#savedView .crumbs >> text=‹ Dashboard");
   await page.waitForFunction(() => VIEW.name === "dash");
+  ok(/^Saved on this iPad \(2\)$/.test(await page.textContent("#savedLink")), "the dashboard links to it, with the count: " + await page.textContent("#savedLink"));
   await Promise.all([page.waitForURL(u => /code=/.test(u)), page.click("#signInBtn")]);
   await page.waitForFunction(() => /all readings backed up/.test(document.querySelector("#syncMsg").textContent), null, {timeout: 30000});
   const auth = D.authorize[0];
@@ -429,6 +436,7 @@ async function main() {
   ok(true, "back online: uploaded without a tap");
   ok([...D.files.keys()].filter(k => k.endsWith(".json") && !k.endsWith("site status.json") && k.startsWith(site.toLowerCase())).length === 4 &&
      D.files.get((site + "Tribar readings - " + SITE + ".csv").toLowerCase()).body.toString().trim().split("\r\n").length === 5, "site CSV now has all 4 readings");
+  await savedPage(page);
   const [dl2] = await Promise.all([page.waitForEvent("download"), page.click(".reading button[title='Share the marked-up photo']")]);
   ok(!!dl2, "Share still works after backup (marked-up photo kept)");
   await page.evaluate(() => { window.__exp = null; const orig = downloadBlob; downloadBlob = (n, b) => { window.__exp = b; orig(n, b); }; });
@@ -436,6 +444,7 @@ async function main() {
   { const rows = parseCsv(await page.evaluate(async () => window.__exp.text()));
     const col = rows[0].indexOf("Saved by");
     ok(col > 0 && rows.length === 5 && rows.slice(1).every(r => r[col] === "Test Inspector"), "Export CSV has a Saved by column, filled for every reading"); }
+  await measurePage(page);
   ok(await page.evaluate(async () => Object.keys((await TribarSync.cachedIndex()).readings).length) >= 3, "the team folder's index is kept on the device for when there's no signal");
 
   /* ---- low resolution ---- */
@@ -452,14 +461,16 @@ async function main() {
   await page.waitForTimeout(300);
   const over = await page.evaluate(() => ({doc: document.documentElement.scrollWidth, wide: [...document.querySelectorAll("body *")].filter(e => e.getBoundingClientRect().right > innerWidth + 1 && getComputedStyle(e).position !== "fixed").map(e => e.tagName + "." + e.className).slice(0, 8)}));
   ok(over.doc <= 390 && !over.wide.length, "390 px wide: no sideways scroll" + (over.wide.length ? " (too wide: " + over.wide.join(", ") + ")" : ""));
-  const cols = await page.evaluate(() => [...document.querySelectorAll(".reading .what, #resultCard .tip")].map(e => Math.round(e.getBoundingClientRect().width)));
+  const colsOf = sel => page.evaluate(sel => [...document.querySelectorAll(sel)].map(e => Math.round(e.getBoundingClientRect().width)), sel);
+  const cols = await colsOf("#resultCard .tip");
+  await savedPage(page); cols.push(...await colsOf(".reading .what"));
   ok(cols.length && Math.min(...cols) >= 200, "390 px wide: saved readings and the Saves-under line keep a readable width (" + cols.join(", ") + " px)");
   if (SHOTS) {
     await page.screenshot({path: path.join(SHOTS, "phone-result.png"), fullPage: false, clip: await page.$eval("#resultCard", e => { e.scrollIntoView(); const r = e.getBoundingClientRect(); return {x: 0, y: Math.max(0, r.top), width: 390, height: Math.min(844, r.height + 20)}; })});
     await page.$eval("#saved", e => e.scrollIntoView({block: "end"}));
     await page.screenshot({path: path.join(SHOTS, "phone-saved.png")});
   }
-  for (const [h, what] of [["#/", "dashboard"], ["#/site/" + encodeURIComponent(SITE), "site page"]]) {
+  for (const [h, what] of [["#/", "dashboard"], ["#/site/" + encodeURIComponent(SITE), "site page"], ["#/saved", "saved page"]]) {
     await page.evaluate(h => { location.hash = h; }, h); await page.waitForTimeout(300);
     const o = await page.evaluate(() => ({doc: document.documentElement.scrollWidth, wide: [...document.querySelectorAll("body *")].filter(e => e.getBoundingClientRect().right > innerWidth + 1 && getComputedStyle(e).position !== "fixed" && e.offsetParent).map(e => e.tagName + "." + e.className).slice(0, 8)}));
     ok(o.doc <= 390 && !o.wide.length, "390 px wide " + what + ": no sideways scroll" + (o.wide.length ? " (too wide: " + o.wide.join(", ") + ")" : ""));
@@ -470,8 +481,7 @@ async function main() {
     await page.setViewportSize({width: 820, height: 1180});
     await page.$eval("#resultCard", e => e.scrollIntoView());
     await page.screenshot({path: path.join(SHOTS, "ipad-result.png")});
-    await page.$eval("#saved", e => e.scrollIntoView({block: "end"}));
-    await page.screenshot({path: path.join(SHOTS, "ipad-saved.png")});
+    await savedPage(page); await page.screenshot({path: path.join(SHOTS, "ipad-saved.png")});
     await page.evaluate(() => { location.hash = "#/"; }); await page.waitForTimeout(300);
     await page.screenshot({path: path.join(SHOTS, "ipad-dashboard.png")});
     await page.evaluate(h => { location.hash = h; }, "#/site/" + encodeURIComponent(SITE)); await page.waitForTimeout(300);
@@ -697,7 +707,7 @@ async function main() {
 
     /* the trash button on a reading is as it was: it only removes the reading from this iPad */
     const E = await pad([]);
-    await E.pg.goto(APP + "#/measure"); await idle(E.pg);
+    await E.pg.goto(APP + "#/saved"); await idle(E.pg);
     await inject(E.pg, [rd("off00002", "Keep Farm", "07", {by: "Test Inspector", synced: false}), Object.assign(rd("off00001", "Keep Farm", "06", {by: "Test Inspector"}), {synced: "2026-11-06T16:00:00Z"})]);
     const msgs = []; E.pg.on("dialog", d => { msgs.push(d.message()); d.accept(); });
     const calls = D8.log.length, delBefore = D8.deleted.length, tombBefore = D8.files.get(LISTF.toLowerCase()).rev;
@@ -773,6 +783,7 @@ async function main() {
     ok(filesOf(id).join() === "json,marked 1.jpg,marked 2.jpg,marked 3.jpg,photo 1.jpg,photo 2.jpg,photo 3.jpg" && jsonsOf(id).length === 1, "and are in Dropbox: " + filesOf(id).join(", "));
 
     /* a reading saved before originals were kept can't be edited; the button says why */
+    await savedPage(X.pg);
     { const b = X.pg.locator("#saved .reading", {hasText: "Old Farm"}).locator("button", {hasText: "Edit spots"});
       ok(await b.isDisabled() && /original photos/.test(await b.getAttribute("title")) && /No original photos kept/.test(await X.pg.locator("#saved .reading", {hasText: "Old Farm"}).innerText()), "no originals kept: Edit spots is greyed out, and says why"); }
     ok(await X.pg.locator("#saved .reading", {hasText: ESITE}).locator("button", {hasText: "Edit spots"}).isEnabled(), "a reading with originals can be edited");
@@ -783,9 +794,10 @@ async function main() {
     await X.pg.waitForFunction(() => /once there’s signal/.test(document.querySelector("#toast").textContent), null, {timeout: 10000});
     ok(/The original photos aren’t on this iPad\. They’ll be available once there’s signal\./.test(await toastText(X.pg)) && await X.pg.evaluate(() => !STATE.editing && !STATE.photos.length), "no signal, originals not on the iPad: \"" + await toastText(X.pg) + "\"");
     /* a reading not backed up yet still has its originals on the iPad: it can be edited with no signal */
-    await X.pg.fill("#fCrate", "7"); await tapThree(X.pg); await X.pg.click("#saveBtn");
+    await measurePage(X.pg); await X.pg.fill("#fCrate", "7"); await tapThree(X.pg); await X.pg.click("#saveBtn");
     await X.pg.waitForFunction(() => STATE.readings.length === 3 && !STATE.photos.length);
     const r7 = await X.pg.evaluate(() => STATE.readings.find(r => r.crate === "7"));
+    await savedPage(X.pg);
     await X.pg.locator("#saved .reading", {hasText: "Crate 7"}).locator("button", {hasText: "Edit spots"}).click();
     await X.pg.waitForFunction(() => STATE.editing && STATE.photos.length === 3 && STATE.photos.every(p => p.status === "done"), null, {timeout: 90000});
     ok((await spots(X.pg)).every((k, i) => sameSpot(k, r7.photos[i].pick)), "no signal, originals on the iPad: the photos are measured again and the old spots are back, " + (await spots(X.pg)).map(k => (100 * k.loss).toFixed(1) + "%").join(", "));
@@ -796,6 +808,7 @@ async function main() {
     /* edit spots on a backed-up reading: originals from Dropbox, old spots shown, same reading when saved */
     const before = Object.fromEntries([...D9.files.values()].filter(f => f.path.startsWith(EDIR) && f.path.includes(" " + id)).map(f => [f.path, f.rev]));
     const dl0 = D9.log.filter(l => l.endpoint === "files/download").length;
+    await savedPage(X.pg);
     await X.pg.locator("#saved .reading", {hasText: "Crate 6"}).locator("button", {hasText: "Edit spots"}).click();
     await X.pg.waitForFunction(() => STATE.editing && STATE.photos.length === 3 && STATE.photos.every(p => p.status === "done"), null, {timeout: 120000});
     const dls = D9.log.slice(dl0).filter(l => l.endpoint === "files/download").map(l => JSON.parse(l.headers["dropbox-api-arg"]).path);
@@ -930,6 +943,7 @@ async function main() {
       ok(await q.evaluate(() => STATE.setupMemo["OLDFARM|barn 3"] && STATE.setupMemo["OLDFARM|barn 3"].perRow === 20), "crates per row remembered before the barn setup existed is kept"); await c.close(); }
     // the CSV and an unrelated reading
     await z.evaluate(() => { window.__csv = null; const orig = downloadBlob; downloadBlob = (n, b) => { window.__csv = b; orig(n, b); }; });
+    await savedPage(z);
     await Promise.all([z.waitForEvent("download"), z.click("#csvBtn")]);
     { const rows = parseCsv(await z.evaluate(async () => (await window.__csv.text()))), h = rows[0], c = n => h.indexOf(n);
       ok(c("Crates per row") > 0 && c("Side") > 0 && c("Last visit") > 0 && rows.slice(1).map(r => r[c("Crates per row")] + "/" + r[c("Side")]).join() === "24/Front,24/Back", "CSV: Crates per row and Side columns: " + rows.slice(1).map(r => r[c("Crates per row")] + "/" + r[c("Side")]).join(", ")); }
