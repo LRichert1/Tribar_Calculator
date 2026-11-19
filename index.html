@@ -1577,6 +1577,16 @@ function newReadingAt(site){
   }
   go("#/measure");
 }
+// "+ New reading" on the dashboard means a new site: a blank location. (A reading of an existing site starts from that
+// site's page, + New reading here.) A reading already under way, with photos taken, is left as it is.
+function newSite(){
+  if (!STATE.photos.length){
+    Object.assign(STATE.loc, {site:"", barn:"", room:"", row:"", crate:"", note:""});
+    for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
+    persist(); renderResult();
+  }
+  go("#/measure");
+}
 async function markSite(s, status){
   if (!TribarSync.signedIn()) return toast("Sign in to Dropbox first: the site's status is kept in the team folder for everyone.");
   if (navigator.onLine === false) return toast("No signal. Mark it when there is.");
@@ -1732,7 +1742,7 @@ function init(){
   // ask the browser not to clear stored photos when space runs low (home-screen apps usually get this anyway)
   try{ if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }catch(e){}
   // pages
-  $("#newReadingBtn").addEventListener("click", () => go("#/measure"));
+  $("#newReadingBtn").addEventListener("click", newSite);
   $("#dashSearch").addEventListener("input", e => { TEAM.q = e.target.value; renderDash(); });
   $("#lbClose").addEventListener("click", closePhotos);
   $("#lbPrev").addEventListener("click", () => { LB.i = (LB.i + LB.files.length - 1) % LB.files.length; showPhoto(); });
