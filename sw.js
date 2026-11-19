@@ -12,6 +12,7 @@ const ASSETS = [
   "./index.html",
   "./tribar.js",
   "./sync.js",
+  "./pdf.js",
   "./worker.js",
   "./manifest.webmanifest",
   "./icon-180.png",
