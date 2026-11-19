@@ -77,12 +77,8 @@
   .tip{color:var(--muted);font-size:13px;margin:0 0 12px}
 
   /* ---------- Location ---------- */
-  .loc{display:grid;grid-template-columns:1.1fr 1.4fr .8fr .8fr 1fr;gap:12px;align-items:end}
-  .setup{margin-top:14px;padding:12px 14px;background:#f6f8fa;border:1px solid var(--line);border-radius:10px}
-  .setup .stitle{font-weight:700;font-size:13.5px;margin-bottom:8px}
-  .setup .stitle .hint{font-weight:400;color:var(--muted)}
-  .loc3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;max-width:560px;align-items:end}
-  @media(max-width:640px){.loc3{grid-template-columns:1fr 1fr 1fr}}
+  .loc{display:grid;grid-template-columns:1.1fr 1.4fr .7fr .7fr .8fr .9fr;gap:12px;align-items:end}
+  .dtable tr.fresh td{background:#fff8d6}
   @media(max-width:640px){.loc{grid-template-columns:1fr 1fr}}
   .f label{display:block;font-weight:600;font-size:13px;margin-bottom:5px}
   .f .hint{font-weight:400;color:var(--muted)}
@@ -314,23 +310,15 @@
   <section class="card editbar" id="editBar" hidden></section>
   <!-- ============ LOCATION ============ -->
   <section class="card" id="locCard">
-    <div class="hdr"><h2>Location</h2><button class="btn sm" id="sameLocBtn" hidden title="Go back to the location of the reading just saved, to redo it">↺ Same location</button></div>
+    <div class="hdr"><h2>Location</h2></div>
     <div class="loc">
       <div class="f"><label for="fSite">Site</label><input class="text" id="fSite" placeholder="e.g. C072" autocomplete="off" list="siteList"><datalist id="siteList"></datalist></div>
       <div class="f"><label for="fBarn">Barn</label><input class="text" id="fBarn" placeholder="e.g. Farrowing 2" autocomplete="off"></div>
       <div class="f"><label for="fRoom">Room</label><input class="text" id="fRoom" inputmode="numeric" autocomplete="off"></div>
       <div class="f"><label for="fRow">Row</label><input class="text" id="fRow" inputmode="numeric" autocomplete="off"></div>
+      <div class="f"><label for="fPerRow">Crates per row</label><input class="text" id="fPerRow" inputmode="numeric" placeholder="e.g. 24" autocomplete="off"></div>
       <div class="f"><label for="fCrate"># of Crates from front of room</label>
         <input class="text" id="fCrate" inputmode="numeric" placeholder="front crate = 1" autocomplete="off"></div>
-    </div>
-    <div class="setup" id="setupBox">
-      <div class="stitle">Barn setup <span class="hint">(asked once for a new barn, then kept for this site and barn)</span></div>
-      <div class="loc3">
-        <div class="f"><label for="fRooms">Rooms per barn</label><input class="text" id="fRooms" inputmode="numeric" placeholder="e.g. 8" autocomplete="off"></div>
-        <div class="f"><label for="fRows">Rows per room</label><input class="text" id="fRows" inputmode="numeric" placeholder="e.g. 10" autocomplete="off"></div>
-        <div class="f"><label for="fPerRow">Crates per row</label><input class="text" id="fPerRow" inputmode="numeric" placeholder="e.g. 24" autocomplete="off"></div>
-      </div>
-      <p class="tip" id="setupHint" style="margin:8px 0 0" hidden></p>
     </div>
     <p class="tip" id="sideTag" style="margin:10px 0 0"></p>
     <div class="f note"><label for="fNote">Note <span class="hint">(optional)</span></label><input class="text" id="fNote" autocomplete="off"></div>
@@ -433,10 +421,9 @@ const widerWarning = loss => "This spot reads " + pct(-loss) + " wider than new 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const STATE = {
-  loc: {site:"", barn:"", room:"", row:"", crate:"", perRow:"", rowsPerRoom:"", roomsPerBarn:"", note:""},
-  setupMemo: {},    // the barn setup (crates per row, rows per room, rooms per barn), remembered per site and barn
+  loc: {site:"", barn:"", room:"", row:"", crate:"", perRow:"", note:""},
+  setupMemo: {},    // crates per row, remembered per site and barn
   locKey: null,     // {key, site, barn}: the site and barn the crates-per-row field currently belongs to
-  lastLoc: null,    // the location of the reading saved last, for Same location
   photos: [],      // the reading being taken: {id, name, status, msg, progress, result, pick (the tapped worst bar), ...}
   readings: [],    // saved readings, newest first
   marks: true,
@@ -444,14 +431,14 @@ const STATE = {
 };
 
 function persist(){
-  try{ localStorage.setItem(STORE_KEY, JSON.stringify({loc:STATE.loc, readings:STATE.readings, marks:STATE.marks, setup:STATE.setupMemo, lastLoc:STATE.lastLoc})); }
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify({loc:STATE.loc, readings:STATE.readings, marks:STATE.marks, setup:STATE.setupMemo})); }
   catch(e){ toast("Couldn’t save on this device: "+e.message); }
 }
 function restore(){
   try{
     const d = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
     if (d){ Object.assign(STATE.loc, d.loc||{}); STATE.readings = d.readings||[]; if (d.marks===false) STATE.marks=false;
-            STATE.setupMemo = d.setup || {}; STATE.lastLoc = d.lastLoc || null;
+            STATE.setupMemo = d.setup || {};
             for (const [k, n] of Object.entries(d.perRow || {})) STATE.setupMemo[k] = Object.assign({perRow:n}, STATE.setupMemo[k]); }     // kept before the barn setup had three numbers
     delete STATE.loc.side;    // the old Front/Back field, replaced by the crate count
     for (const r of STATE.readings) if (!r.files){ r.files = []; r.synced = false; }   // saved before the Dropbox backup: back up the numbers
@@ -472,16 +459,15 @@ function locLabel(r){
 
 /* ------------------------------------------------------------------ *
  *  Location: the side of the row, crates per row (remembered per site
- *  and barn), the next location after a save, and the last visit
+ *  and barn), and the last visit
  * ------------------------------------------------------------------ */
 const toNum = v => { const n = parseInt(v, 10); return n > 0 ? n : null; };
 // Front side up to half the crates in the row, back side after that
 const sideOf = (crate, perRow) => { const c = toNum(crate), n = toNum(perRow); return c && n ? (c <= n / 2 ? "Front" : "Back") : null; };
-const backStart = n => Math.floor(n / 2) + 1;                 // the first crate of the back side
 const sideOfReading = r => r.side || sideOf(r.crate, r.perRow);
 const perRowKey = (site, barn) => TribarSync.siteKey(site) + "|" + String(barn || "").trim().toLowerCase();
 // The barn setup for a site and barn: what was typed last time, else what the team's readings there say
-const SETUP = ["perRow", "rowsPerRoom", "roomsPerBarn"];
+const SETUP = ["perRow"];            // (readings saved with rows per room and rooms per barn keep them; nothing asks for or uses them any more)
 function setupFor(site, barn){
   const key = perRowKey(site, barn), memo = STATE.setupMemo[key] || {}, out = {};
   for (const k of SETUP) out[k] = toNum(memo[k]);
@@ -491,13 +477,13 @@ function setupFor(site, barn){
   }
   return out;
 }
-const LOC_BLANK = {site:"", barn:"", room:"", row:"", crate:"", perRow:"", rowsPerRoom:"", roomsPerBarn:"", note:""};
+const LOC_BLANK = {site:"", barn:"", room:"", row:"", crate:"", perRow:"", note:""};
 function setLoc(k, v){
   STATE.loc[k] = v;
   const id = Object.keys(LOC_FIELDS).find(i => LOC_FIELDS[i] === k); if (id) $("#" + id).value = v;
 }
 const locKeyNow = () => STATE.loc.site && STATE.loc.barn ? {key:perRowKey(STATE.loc.site, STATE.loc.barn), site:STATE.loc.site, barn:STATE.loc.barn} : null;
-// The barn setup follows the site and barn: filled in when they're known, cleared when it was the last barn's
+// Crates per row follows the site and barn: filled in when they're known, cleared when it was the last barn's
 function fillSetup(){
   const L = STATE.loc, now = locKeyNow(), prev = STATE.locKey, known = now && setupFor(L.site, L.barn), was = prev && setupFor(prev.site, prev.barn);
   for (const k of SETUP){
@@ -520,35 +506,7 @@ function locEdited(key){
 // the form's location as a reading, to find its side and its last visit
 function formReading(){
   const L = STATE.loc, ed = STATE.editing && STATE.editing.base;
-  return Object.assign({}, L, {side:sideOf(L.crate, L.perRow), perRow:toNum(L.perRow), rowsPerRoom:toNum(L.rowsPerRoom), roomsPerBarn:toNum(L.roomsPerBarn), savedAt:ed ? ed.savedAt : new Date().toISOString(), id:ed ? ed.id : null});
-}
-// After a save: the same site and barn, the next place along. Front side, then the back side of the same row, then the front
-// of the next row; after the last row of a room (rows per room) the first row of the next room; after the last room (rooms
-// per barn) the barn is done. Without the barn setup the rows and rooms just count up. Returns {text, done}, or null when the
-// crates per row aren't known (then the location stays as it was).
-const intOf = v => /^\d+$/.test(String(v == null ? "" : v).trim()) ? parseInt(v, 10) : null;
-function advanceLocation(r){
-  STATE.lastLoc = {site:r.site || "", barn:r.barn || "", room:r.room || "", row:r.row || "", crate:r.crate || "", note:r.note || "",
-                   perRow:r.perRow ? String(r.perRow) : "", rowsPerRoom:r.rowsPerRoom ? String(r.rowsPerRoom) : "", roomsPerBarn:r.roomsPerBarn ? String(r.roomsPerBarn) : ""};
-  const n = toNum(r.perRow), side = r.side;
-  if (!n || !side) return null;
-  setLoc("note", "");
-  if (side === "Front"){ setLoc("crate", String(backStart(n))); return {text:"Row " + (r.row || "?") + " · Back side · crate " + backStart(n)}; }
-  const rows = toNum(r.rowsPerRoom), rooms = toNum(r.roomsPerBarn), row = intOf(r.row), room = intOf(r.room);
-  if (rows && row !== null && row >= rows){                      // the last row of this room
-    if (rooms && room !== null && room >= rooms) return {text:"That was the last row of the last room: this barn is done. Change the barn for the next one, or use Same location to redo one.", done:true};
-    setLoc("row", "1"); setLoc("crate", "1");
-    if (room !== null){ setLoc("room", String(room + 1)); return {text:"Room " + (room + 1) + " · Row 1 · Front side · crate 1"}; }
-    return {text:"Row 1 · Front side · crate 1 (change the room)"};
-  }
-  if (row !== null) setLoc("row", String(row + 1));
-  setLoc("crate", "1");
-  return {text:(row !== null ? "Row " + (row + 1) : "Row " + (r.row || "?") + " (change it)") + " · Front side · crate 1"};
-}
-function sameLocation(){
-  if (!STATE.lastLoc || STATE.editing) return;
-  for (const k of Object.keys(LOC_BLANK)) setLoc(k, STATE.lastLoc[k] || "");
-  STATE.locKey = locKeyNow(); persist(); updateLocUI(); renderResult(); renderCrumbs(); showSite();
+  return Object.assign({}, L, {side:sideOf(L.crate, L.perRow), perRow:toNum(L.perRow), savedAt:ed ? ed.savedAt : new Date().toISOString(), id:ed ? ed.id : null});
 }
 /* The reading at the same site, barn, room, row and side from the most recent earlier visit: saved more than a week
    before this one. Readings from the team's folder count too. */
@@ -566,14 +524,8 @@ const lastVisitText = q => "Last visit " + fmtDay(q.savedAt) + ": " + BAND_TEXT[
 const betterThan = (band, q) => !!q && BANDS.indexOf(band) < BANDS.indexOf(q.band);
 const BETTER_NOTE = "Better than last visit. Tribar replaced?";
 function updateLocUI(){
-  const L = formReading(), tag = $("#sideTag"), lv = $("#lastVisit"), hint = $("#setupHint");
-  const room = intOf(L.room), row = intOf(L.row);
-  tag.textContent = [L.side ? L.side + " side of the row" + (L.perRow ? " (crates 1 to " + Math.floor(L.perRow / 2) + " are the front side)" : "") : L.crate && !L.perRow ? "Fill in the crates per row to get the side." : null,
-                     L.roomsPerBarn && room ? "Room " + room + " of " + L.roomsPerBarn : null, L.rowsPerRoom && row ? "Row " + row + " of " + L.rowsPerRoom : null].filter(Boolean).join(" · ");
-  const missing = L.site && L.barn && !(L.perRow && L.rowsPerRoom && L.roomsPerBarn);
-  hint.hidden = !missing;
-  if (missing) hint.textContent = "New barn? Fill in the barn setup so Next location knows where the rows and rooms end. It's kept for this site and barn.";
-  $("#sameLocBtn").hidden = !STATE.lastLoc || !!STATE.editing;
+  const L = formReading(), tag = $("#sideTag"), lv = $("#lastVisit");
+  tag.textContent = L.side ? L.side + " side of the row" + (L.perRow ? " (crates 1 to " + Math.floor(L.perRow / 2) + " are the front side)" : "") : L.crate && !L.perRow ? "Fill in the crates per row to get the side." : "";
   lv.innerHTML = ""; lv.className = "lastv";
   const full = visitKey(L);
   lv.hidden = !full;
@@ -1051,7 +1003,7 @@ async function saveReading(){
     const ed = STATE.editing, old = ed && ed.base, me = (TribarSync.account() || {}).name || null;
     const id = old ? old.id : uid(), worst = picked.slice().sort((a, b) => b.pick.loss - a.pick.loss)[0];
     const r = {
-      id, savedAt:old ? old.savedAt : new Date().toISOString(), ...STATE.loc, perRow:toNum(STATE.loc.perRow), rowsPerRoom:toNum(STATE.loc.rowsPerRoom), roomsPerBarn:toNum(STATE.loc.roomsPerBarn), side:sideOf(STATE.loc.crate, STATE.loc.perRow),
+      id, savedAt:old ? old.savedAt : new Date().toISOString(), ...STATE.loc, perRow:toNum(STATE.loc.perRow), side:sideOf(STATE.loc.crate, STATE.loc.perRow),
       by:old ? old.by || me : me,
       band:Tribar.grade(avg.loss), worstSpot:avg.loss, worstSpotRatio:avg.ratio, worstSpotN:avg.n, worstBar:avg.bar,
       spotsAveraged:avg.count, spotLosses:picked.map(p => p.pick.loss), spotSpread:avg.spread,
@@ -1066,6 +1018,7 @@ async function saveReading(){
           ratio: v.ratio ?? null, ratio_worst: v.ratio_worst ?? null, n: v.n ?? null}))})),
       files: [], synced: false,
     };
+    if (old) for (const k of ["rowsPerRoom", "roomsPerBarn"]) if (old[k] != null) r[k] = old[k];       // saved by an earlier version: kept as they were
     // an edit: who, when, and what the reading said before (its worst spot, each photo's value, its band)
     if (old) r.edits = (old.edits || []).concat([{at:new Date().toISOString(), by:me,
       was:{worstSpot:old.worstSpot, band:old.band, photos:old.photos.map(p => ({name:p.name, loss:p.pick ? p.pick.loss : null}))}}]);
@@ -1100,15 +1053,16 @@ async function saveReading(){
     const at = STATE.readings.findIndex(x => x.id === id);
     if (at >= 0) STATE.readings[at] = r; else STATE.readings.unshift(r);
     shareCache.delete(id);
-    let next = null;
-    if (!old){                                  // a new reading: remember its crates per row and move on to the next location
+    if (!old){                                  // a new reading: remember its crates per row; the form starts empty for the next one
       rememberSetup(r);
-      next = advanceLocation(r);
+      Object.assign(STATE.loc, LOC_BLANK); STATE.locKey = null;
+      for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = "";
     }
     persist();
     STATE.photos = []; STATE.editing = null; renderEdit(); renderPhotos(); renderResult(); renderSaved(); updateLocUI();
-    toast((old ? "Updated " : "Saved ") + locLabel(r) + ": " + BAND_TEXT[r.band] + (next ? next.done ? ". " + next.text : ". Next: " + next.text : ""));
+    toast((old ? "Updated " : "Saved ") + locLabel(r) + ": " + BAND_TEXT[r.band]);
     if (old && ed.from && ed.from !== "#/measure" && VIEW.name === "measure") go(ed.from);
+    else if (!old){ VIEW.fresh = r.id; go(siteHash(r.site)); }                     // on to the site's page, where the new reading is
     sync();
   } finally { saving = false; }
 }
@@ -1258,7 +1212,7 @@ async function editSpots(e){
     }
     for (const p of STATE.photos) if (p.img && p.img.close) p.img.close();
     STATE.photos = []; STATE.editing = {base, dir, from:location.hash || "#/"};
-    Object.assign(STATE.loc, {site:base.site || "", barn:base.barn || "", room:base.room || "", row:base.row || "", crate:base.crate || "", perRow:base.perRow ? String(base.perRow) : "", rowsPerRoom:base.rowsPerRoom ? String(base.rowsPerRoom) : "", roomsPerBarn:base.roomsPerBarn ? String(base.roomsPerBarn) : "", note:base.note || ""});
+    Object.assign(STATE.loc, {site:base.site || "", barn:base.barn || "", room:base.room || "", row:base.row || "", crate:base.crate || "", perRow:base.perRow ? String(base.perRow) : "", note:base.note || ""});
     STATE.locKey = locKeyNow();
     for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
     persist(); renderEdit(); updateLocUI();
@@ -1679,7 +1633,7 @@ async function takeCameraPhoto(){
  *    #/site/<name>  one site's readings
  *    #/measure      take a reading
  * ------------------------------------------------------------------ */
-const VIEW = {name:"dash", site:"", sheetWorst:false};
+const VIEW = {name:"dash", site:"", sheetWorst:false, fresh:null};     // fresh: the reading just saved, shown highlighted on its site's page
 const TEAM = {index:null, busy:false, error:null, tab:"all", q:"", loaded:false};
 const BANDS = Object.keys(BAND_COLORS);                    // lowest loss first
 
@@ -1880,7 +1834,7 @@ function renderSitePage(){
   const tb = el("tbody"), pool = s.readings.map(e => e.r).concat(poolOf());
   for (const e of s.readings.slice().sort(byLocation)){
     const r = e.r, marked = (r.files || []).filter(f => f.kind === "marked" && !f.lost), lv = lastVisit(r, pool);
-    tb.appendChild(el("tr", {}, [
+    tb.appendChild(el("tr", {class:VIEW.fresh === r.id ? "fresh" : null}, [
       td("Location", [el("b", {text:locLabel(r)}), r.note ? el("span", {class:"small", text:r.note}) : null], "lead"),
       td("Loss", [bandChip(r.band), lv ? el("span", {class:"small", text:lastVisitText(lv)}) : null,
                   betterThan(r.band, lv) ? el("span", {class:"small", style:"color:var(--danger);font-weight:600", text:BETTER_NOTE}) : null]),
@@ -1894,11 +1848,22 @@ function renderSitePage(){
     ]));
   }
   box.appendChild(el("table", {class:"dtable"}, [el("thead", {}, [el("tr", {}, ["Location", "Loss", "Worst spot", "That bar", "Saved", "Backup", ""].map(h => el("th", {text:h})))]), tb]));
+  if (VIEW.fresh){                                          // the reading just saved: in view, highlighted for a few seconds
+    const row = box.querySelector("tr.fresh");
+    if (row) setTimeout(() => row.scrollIntoView({block:"center"}), 0);
+    clearTimeout(VIEW.freshT);
+    VIEW.freshT = setTimeout(() => { VIEW.fresh = null; for (const x of document.querySelectorAll("tr.fresh")) x.classList.remove("fresh"); }, 8000);
+  }
 }
+// "+ New reading here" on a site's page: the site, and the barn and crates per row of the last reading saved at that site on
+// this device. Room, row, crate and note start blank. A reading already under way, with photos taken, keeps its location.
 function newReadingAt(site){
   if (STATE.editing){ toast("You’re editing a reading. Save or cancel the edit first."); return go("#/measure"); }
-  if (site && TribarSync.siteKey(STATE.loc.site) !== TribarSync.siteKey(site)){      // another site: its own barns and rooms
-    Object.assign(STATE.loc, LOC_BLANK, {site}); STATE.locKey = locKeyNow();
+  if (!STATE.photos.length){
+    const key = TribarSync.siteKey(site);
+    const last = STATE.readings.filter(r => TribarSync.siteKey(r.site) === key).sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)))[0];
+    Object.assign(STATE.loc, LOC_BLANK, {site:site || "", barn:last && last.barn || "", perRow:last && last.perRow ? String(last.perRow) : ""});
+    STATE.locKey = locKeyNow();
     for (const [id, k] of Object.entries(LOC_FIELDS)) $("#" + id).value = STATE.loc[k] || "";
     persist(); renderResult(); updateLocUI();
   }
@@ -2098,7 +2063,7 @@ async function sharePhoto(){
   downloadBlob(f.name, f);
 }
 
-const LOC_FIELDS = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate:"crate", fRooms:"roomsPerBarn", fRows:"rowsPerRoom", fPerRow:"perRow", fNote:"note"};
+const LOC_FIELDS = {fSite:"site", fBarn:"barn", fRoom:"room", fRow:"row", fCrate:"crate", fPerRow:"perRow", fNote:"note"};
 
 // This page and sync.js have to come from the same release. For a few minutes after an update a browser can pair
 // the new page with its cached copy of the old sync.js (GitHub Pages lets browsers keep files for 10 minutes), which
@@ -2163,7 +2128,6 @@ function init(){
   $("#lbShare").addEventListener("click", sharePhoto);
   document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#lightbox").hidden) closePhotos(); });
   window.addEventListener("hashchange", route);
-  $("#sameLocBtn").addEventListener("click", sameLocation);
   renderPhotos(); renderResult(); renderSaved(); renderEdit(); updateLocUI();
   if (TribarSync.loadDeleted) TribarSync.loadDeleted().then(() => { announceRemoved(TribarSync.purge(STATE.readings)); redrawTeamViews(); }).catch(() => {});
   try{ route(); }catch(e){ console.error(e); }               // a page that can't draw mustn't stop Dropbox starting

@@ -158,6 +158,9 @@ async function tapThree(page, ...names) {
 // The readings saved on this iPad are on their own page (#/saved), not on the measuring page
 async function savedPage(page) { await page.evaluate(() => { location.hash = "#/saved"; }); await page.waitForFunction(() => VIEW.name === "saved"); }
 async function measurePage(page) { await page.evaluate(() => { location.hash = "#/measure"; }); await page.waitForFunction(() => VIEW.name === "measure"); }
+// Fill in the location fields given. A saved reading leaves the form empty, so a reading saved after another sets its location again.
+const LOC_IDS = {site: "#fSite", barn: "#fBarn", room: "#fRoom", row: "#fRow", crate: "#fCrate", perRow: "#fPerRow", note: "#fNote"};
+async function fillLoc(page, loc) { for (const k of Object.keys(LOC_IDS)) if (loc[k] !== undefined) await page.fill(LOC_IDS[k], loc[k]); }
 const resultText = page => page.$eval("#resultCard", e => e.innerText);
 const near = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol;
 // CSV text -> rows of cells (quoted cells may hold commas)
@@ -419,6 +422,7 @@ async function main() {
 
   /* ---- a 401 renews the token once ---- */
   D.expired.add("AT1");
+  await measurePage(page); await fillLoc(page, {site: SITE, barn: "Farrowing 2", room: "3", row: "2", crate: "5"});
   await tapThree(page);
   await page.click("#saveBtn");
   await page.waitForFunction(() => STATE.readings.length === 3 && STATE.readings[0].synced, null, {timeout: 30000});
@@ -426,6 +430,7 @@ async function main() {
 
   /* ---- offline, then back online ---- */
   await ctx.setOffline(true);
+  await measurePage(page); await fillLoc(page, {site: SITE, barn: "Farrowing 2", room: "3", row: "2", crate: "5"});
   await tapThree(page);
   await page.click("#saveBtn");
   await page.waitForFunction(() => STATE.readings.length === 4);
@@ -519,7 +524,7 @@ async function main() {
     await p3.waitForFunction(() => TribarSync.account(), null, {timeout: 15000}).catch(() => {});
     ok(D3.authorize[0].redirect_uri === other && D3.tokenCalls[0].redirect_uri === other && await p3.evaluate(() => !!TribarSync.account()),
        "opened at " + other + "index.html: redirect URI " + D3.authorize[0].redirect_uri + ", signed in");
-    await p3.waitForFunction(() => STATE.readings[0].by, null, {timeout: 15000}).catch(() => {});
+    await p3.waitForFunction(() => STATE.readings[0].by && !SYNC.busy && !TribarSync.pendingCsv(), null, {timeout: 20000}).catch(() => {});      // "by" is set before the upload ends: wait for the sync to finish
     const nb = D3.files.get((BASE + "/c44/2026-11-16 farrowing Room 15 Row 2 Crate 1 nobyby01.json").toLowerCase());
     ok(nb && JSON.parse(nb.body).by === "Test Inspector", "a reading backed up without who saved it is re-uploaded with the signed-in name, once" + (nb ? "" : " — files: " + [...D3.files.values()].map(f => f.path.slice(BASE.length)).join(" | ") +
        " — page: " + await p3.evaluate(() => JSON.stringify({err: SYNC.error, busy: SYNC.busy, by: STATE.readings[0].by, signedIn: TribarSync.signedIn(), acct: !!TribarSync.account(), msg: document.querySelector("#syncMsg").textContent})) +
@@ -794,7 +799,7 @@ async function main() {
     await X.pg.waitForFunction(() => /once there’s signal/.test(document.querySelector("#toast").textContent), null, {timeout: 10000});
     ok(/The original photos aren’t on this device\. They’ll be available once there’s signal\./.test(await toastText(X.pg)) && await X.pg.evaluate(() => !STATE.editing && !STATE.photos.length), "no signal, originals not on the iPad: \"" + await toastText(X.pg) + "\"");
     /* a reading not backed up yet still has its originals on the iPad: it can be edited with no signal */
-    await measurePage(X.pg); await X.pg.fill("#fCrate", "7"); await tapThree(X.pg); await X.pg.click("#saveBtn");
+    await measurePage(X.pg); await fillLoc(X.pg, {site: ESITE, barn: "Barn 7", room: "4", row: "2", crate: "7"}); await tapThree(X.pg); await X.pg.click("#saveBtn");
     await X.pg.waitForFunction(() => STATE.readings.length === 3 && !STATE.photos.length);
     const r7 = await X.pg.evaluate(() => STATE.readings.find(r => r.crate === "7"));
     await savedPage(X.pg);
@@ -871,7 +876,7 @@ async function main() {
     await X.c.close(); await Y.c.close();
   }
 
-  /* ---- crates per row, the side, Next location, Same location, three photos, and the last visit ---- */
+  /* ---- crates per row and the side, three photos, the form after a save, + New reading here, and the last visit ---- */
   {
     const mk = async (readings = []) => {
       const c = await browser.newContext({serviceWorkers: "block", viewport: {width: 1100, height: 900}});
@@ -883,16 +888,13 @@ async function main() {
     const needText = pg => pg.evaluate(() => { const n = document.querySelector("#resultCard .need"); return n ? n.textContent : null; });
     const saveOff = pg => pg.$eval("#saveBtn", b => b.disabled);
 
-    /* ---- side, Next location, Same location, crates per row remembered, three photos ---- */
+    /* ---- the side, three photos, the form after a save, + New reading here, crates per row remembered ---- */
     const Z = await mk(); const z = Z.pg;
     await z.goto(APP + "#/measure");
-    for (const [id, v] of [["#fSite", "Side Farm"], ["#fBarn", "Barn 1"], ["#fRoom", "2"], ["#fRow", "3"], ["#fCrate", "5"], ["#fPerRow", "24"], ["#fNote", "wet floor"]]) await z.fill(id, v);
+    await fillLoc(z, {site: "Side Farm", barn: "Barn 1", room: "2", row: "3", crate: "5", perRow: "24", note: "wet floor"});
     ok(/^Front side of the row/.test(await z.textContent("#sideTag")), "crate 5 of 24: " + await z.textContent("#sideTag"));
-    ok(await z.isVisible("#setupHint") && /New barn\? Fill in the barn setup/.test(await z.textContent("#setupHint")), "a new barn without its setup: a hint to fill it in");
-    if (SHOTS) await z.locator("#locCard").screenshot({path: path.join(SHOTS, "location-new-barn.png")});
-    await z.fill("#fRows", "10"); await z.fill("#fRooms", "8");
-    if (SHOTS) await z.locator("#locCard").screenshot({path: path.join(SHOTS, "location.png")});
-    ok(!await z.isVisible("#setupHint") && /Front side of the row.* · Room 2 of 8 · Row 3 of 10$/.test(await z.textContent("#sideTag")), "barn setup complete (8 rooms, 10 rows, 24 crates per row): the hint goes, and the form shows where it is: " + await z.textContent("#sideTag"));
+    ok(await z.$("#fRows") === null && await z.$("#fRooms") === null && await z.$("#sameLocBtn") === null && await z.$("#setupHint") === null && !/Room \d+ of|Row \d+ of|Barn setup|Same location/.test(await z.innerText("#locCard")),
+       "no rooms per barn, rows per room, Barn setup box or Same location; crates per row stays");
     ok(await z.evaluate(() => [sideOf(12, 24), sideOf(13, 24), sideOf(12, 25), sideOf(13, 25), sideOf("", 24), sideOf(5, "")].join()) === "Front,Back,Front,Back,,", "front side up to half the crates: 12 and 13 of 24 and of 25 split between front and back");
     await addPhotos(z, "spot-1.jpg"); await tap(z, 0);
     ok(await saveOff(z) && await needText(z) === "Saving needs 3 photos with a tapped spot. 2 more photos still need a tapped spot.", "one photo tapped: Save is disabled and says 2 more are needed");
@@ -904,63 +906,62 @@ async function main() {
     ok(!await saveOff(z) && await needText(z) === null, "three photos with a tapped spot: Save is enabled");
     await z.click("#saveBtn"); await z.waitForFunction(() => STATE.readings.length === 1);
     const s1 = await z.evaluate(() => STATE.readings[0]);
-    ok(s1.perRow === 24 && s1.rowsPerRoom === 10 && s1.roomsPerBarn === 8 && s1.side === "Front" && s1.crate === "5", "the reading keeps the barn setup (24 crates per row, 10 rows, 8 rooms) and its side (Front) in the JSON");
-    ok(await locNow(z) === "Side Farm|Barn 1|2|3|13|24|", "next location after the front side: the same row, back side, crate 13; site, barn, room kept, the note cleared: " + await locNow(z));
-    ok(/Next: Row 3 · Back side · crate 13/.test(await z.textContent("#toast")), "the save message says where next: " + (await z.textContent("#toast")).slice(-40));
-    ok(/Front side/.test(await z.textContent("#saved .where")), "the reading list shows the side: " + await z.textContent("#saved .where"));
-    await tapThree(z); await z.click("#saveBtn"); await z.waitForFunction(() => STATE.readings.length === 2);
-    ok(await z.evaluate(() => STATE.readings[0].side) === "Back" && await locNow(z) === "Side Farm|Barn 1|2|4|1|24|", "after the back side: the next row, crate 1 (front side again): " + await locNow(z));
-    await z.fill("#fRow", "7"); await z.fill("#fCrate", "2");
-    ok(await val(z, "#fRow") === "7", "any field can be changed");
-    await z.click("#sameLocBtn");
-    ok(await locNow(z) === "Side Farm|Barn 1|2|3|13|24|", "Same location goes back to the reading just saved (row 3, crate 13): " + await locNow(z));
+    ok(s1.perRow === 24 && s1.side === "Front" && s1.crate === "5" && !("rowsPerRoom" in s1) && !("roomsPerBarn" in s1), "the reading keeps crates per row (24) and its side (Front); nothing about rows per room or rooms per barn");
+    /* after a save: the site's page, with the reading; the form is empty for the next one */
+    await z.waitForFunction(() => VIEW.name === "site" && document.querySelectorAll("#siteView tbody tr").length === 1);
+    ok(await z.textContent("#siteView .vtitle") === "Side Farm" && /Barn 1 · Room 2 · Row 3 · Crate 5 from front · Front side/.test(await z.innerText("#siteView tbody tr")) && await z.$eval("#siteView tbody tr", r => r.classList.contains("fresh")),
+       "after saving, the site's page opens with the saved reading shown (highlighted)");
+    ok(!/Next:/.test(await z.textContent("#toast")) && /^Saved /.test(await z.textContent("#toast")), "and the save message has no Next location: " + await z.textContent("#toast"));
+    await measurePage(z);
+    ok(await locNow(z) === "||||||", "the form does not keep the old site, barn, room, row, crate or note: " + await locNow(z));
+    await fillLoc(z, {site: "Side Farm", barn: "Barn 2", room: "1", row: "1", crate: "20", perRow: "30", note: "second"});
+    await tapThree(z); await z.click("#saveBtn"); await z.waitForFunction(() => STATE.readings.length === 2 && VIEW.name === "site");
+    ok(await z.evaluate(() => STATE.readings[0].side) === "Back" && await z.$$eval("#siteView tbody tr", r => r.length) === 2, "a second reading (crate 20 of 30: Back side) is on the site's page too");
+    ok(/Back side/.test(await z.textContent("#saved .where")), "the reading list shows the side: " + await z.textContent("#saved .where"));
+    /* + New reading here: the site, and the barn and crates per row of the last reading saved there on this device */
+    await z.click("#siteView >> text=+ New reading here"); await z.waitForFunction(() => VIEW.name === "measure");
+    ok(await locNow(z) === "Side Farm|Barn 2||||30|", "+ New reading here fills in the site, the barn (Barn 2) and crates per row (30) of the last reading there; room, row, crate and note are blank: " + await locNow(z));
+    await z.evaluate(() => { newReadingAt("Unknown Farm"); });
+    ok(await locNow(z) === "Unknown Farm||||||", "a site with no reading on this device: just the site");
+    await addPhotos(z, "spot-1.jpg");
+    await z.evaluate(() => { newReadingAt("Side Farm"); });
+    ok(await locNow(z) === "Unknown Farm||||||", "a reading already under way (photos taken) keeps its location");
+    await z.evaluate(() => { STATE.photos = []; renderPhotos(); renderResult(); });
     // crates per row is remembered per site and barn
+    await fillLoc(z, {site: "Side Farm", barn: "Barn 1"});
+    ok(await val(z, "#fPerRow") === "24", "typing the site and Barn 1 brings back its 24 crates per row");
     await z.fill("#fBarn", "Barn 2");
-    const setupNow = () => z.evaluate(() => ["#fPerRow", "#fRows", "#fRooms"].map(s => document.querySelector(s).value).join("/"));
-    ok(await setupNow() === "//", "another barn: the barn setup is cleared (it was Barn 1's)");
-    await z.fill("#fPerRow", "30"); await z.fill("#fRows", "5"); await z.fill("#fRooms", "3"); await z.fill("#fBarn", "Barn 1");
-    ok(await setupNow() === "24/10/8", "back to Barn 1: its setup comes back");
-    await z.fill("#fBarn", "Barn 2");
-    ok(await setupNow() === "30/5/3", "and Barn 2's");
+    ok(await val(z, "#fPerRow") === "30", "Barn 2's 30");
+    await z.fill("#fBarn", "Barn 3");
+    ok(await val(z, "#fPerRow") === "", "a barn not seen before: cleared (it was Barn 2's)");
     await z.reload(); await z.waitForFunction(() => document.querySelector("#fSite").value);
-    ok(await z.evaluate(() => Object.entries(STATE.setupMemo).map(([k, v]) => k + ":" + [v.perRow, v.rowsPerRoom, v.roomsPerBarn].join("/")).sort().join()) === "SIDEFARM|barn 1:24/10/8,SIDEFARM|barn 2:30/5/3", "kept on the iPad across a restart");
-    /* Next location with the barn setup: where the rows and the rooms end */
-    const advance = (side, room, row, crate, perRow, rows, rooms) => z.evaluate(([side, room, row, crate, perRow, rows, rooms]) => {
-      for (const [k, v] of Object.entries({site: "Side Farm", barn: "Barn 1", room, row, crate, perRow, rowsPerRoom: rows, roomsPerBarn: rooms, note: "x"})) setLoc(k, v);
-      const out = advanceLocation({site: "Side Farm", barn: "Barn 1", room, row, crate, perRow: toNum(perRow), rowsPerRoom: toNum(rows), roomsPerBarn: toNum(rooms), side, note: "x"});
-      return {out, loc: ["room", "row", "crate", "note"].map(k => STATE.loc[k]).join("|")}; }, [side, room, row, crate, perRow, rows, rooms]);
-    { const a1 = await advance("Front", "1", "1", "5", "24", "3", "2"), a2 = await advance("Back", "1", "2", "13", "24", "3", "2"), a3 = await advance("Back", "1", "3", "20", "24", "3", "2"),
-            a4 = await advance("Back", "2", "3", "20", "24", "3", "2"), a5 = await advance("Back", "1", "9", "13", "24", "", ""), a6 = await advance("Back", "A", "3", "13", "24", "3", "2");
-      ok(a1.out.text === "Row 1 · Back side · crate 13" && a1.loc === "1|1|13|", "front side: the back side of the same row, crate 13");
-      ok(a2.out.text === "Row 3 · Front side · crate 1" && a2.loc === "1|3|1|", "back side before the last row: the next row");
-      ok(a3.out.text === "Room 2 · Row 1 · Front side · crate 1" && a3.loc === "2|1|1|", "back side of the last row (3 rows per room): the first row of the next room");
-      ok(a4.out.done && /last row of the last room: this barn is done/.test(a4.out.text) && a4.loc === "2|3|20|", "the last row of the last room (2 rooms): the barn is done, the location stays");
-      ok(a5.out.text === "Row 10 · Front side · crate 1" && a5.loc === "1|10|1|", "without rows per room it just counts up");
-      ok(/change the room/.test(a6.out.text) && a6.loc === "A|1|1|", "a room that isn't a number: the first row, and it says to change the room"); }
-    // a barn memory saved before the barn setup had three numbers is kept
+    ok(await z.evaluate(() => Object.entries(STATE.setupMemo).map(([k, v]) => k + ":" + v.perRow).sort().join()) === "SIDEFARM|barn 1:24,SIDEFARM|barn 2:30", "kept on the device across a restart");
+    // crates per row remembered before there were three numbers is kept
     { const c = await browser.newContext({serviceWorkers: "block"}); await c.addInitScript(() => { if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: [], perRow: {"OLDFARM|barn 3": 20}})); });
       const q = await c.newPage(); await q.goto(APP + "#/measure");
-      ok(await q.evaluate(() => STATE.setupMemo["OLDFARM|barn 3"] && STATE.setupMemo["OLDFARM|barn 3"].perRow === 20), "crates per row remembered before the barn setup existed is kept"); await c.close(); }
-    // the CSV and an unrelated reading
+      ok(await q.evaluate(() => STATE.setupMemo["OLDFARM|barn 3"] && STATE.setupMemo["OLDFARM|barn 3"].perRow === 20), "crates per row remembered by an earlier version is kept"); await c.close(); }
+    // the CSV
     await z.evaluate(() => { window.__csv = null; const orig = downloadBlob; downloadBlob = (n, b) => { window.__csv = b; orig(n, b); }; });
     await savedPage(z);
     await Promise.all([z.waitForEvent("download"), z.click("#csvBtn")]);
     { const rows = parseCsv(await z.evaluate(async () => (await window.__csv.text()))), h = rows[0], c = n => h.indexOf(n);
-      ok(c("Crates per row") > 0 && c("Side") > 0 && c("Last visit") > 0 && rows.slice(1).map(r => r[c("Crates per row")] + "/" + r[c("Side")]).join() === "24/Front,24/Back", "CSV: Crates per row and Side columns: " + rows.slice(1).map(r => r[c("Crates per row")] + "/" + r[c("Side")]).join(", ")); }
+      ok(c("Crates per row") > 0 && c("Side") > 0 && c("Last visit") > 0 && rows.slice(1).map(r => r[c("Crates per row")] + "/" + r[c("Side")]).join() === "24/Front,30/Back", "CSV: Crates per row and Side columns: " + rows.slice(1).map(r => r[c("Crates per row")] + "/" + r[c("Side")]).join(", ")); }
 
-    /* a reading saved before the rule with fewer than 3 photos can still be edited and saved; a new one can't */
+    /* a reading saved before the rule with fewer than 3 photos can still be edited and saved; values an old version saved are kept */
     await z.evaluate(async () => { const r = STATE.readings[0], few = JSON.parse(JSON.stringify(r)); few.id = "oldfew01"; few.photos = [r.photos[0]]; few.spotsAveraged = 1; few.spotLosses = [r.photos[0].pick.loss];
+      few.rowsPerRoom = 10; few.roomsPerBarn = 8;          // saved by an earlier version
       few.files = r.files.filter(f => /1\.\w+$/.test(f.suffix)).map(f => Object.assign({}, f, {key: "oldfew01/" + f.key.split("/")[1]}));
       for (const f of r.files.filter(f => /1\.\w+$/.test(f.suffix))) { const b = await TribarSync.IDB.get(f.key); if (b) await TribarSync.IDB.put("oldfew01/" + f.key.split("/")[1], b); }
       few.synced = false; STATE.readings.unshift(few); persist(); renderSaved(); });
-    await z.locator("#saved .reading", {hasText: "Row 3"}).first().waitFor();
+    await z.locator("#saved .reading").first().waitFor();
     { const few = z.locator("#saved .reading").first();
       ok(await few.locator("button", {hasText: "Edit spots"}).isEnabled(), "the older reading (1 photo) can be edited");
       await few.locator("button", {hasText: "Edit spots"}).click(); }
     await z.waitForFunction(() => STATE.editing && STATE.photos.length === 1 && STATE.photos.every(p => p.status === "done"), null, {timeout: 60000});
-    ok(!await saveOff(z) && await needText(z) === null, "with its 1 photo tapped, the edit can be saved (the rule is 3 only for new readings)");
+    ok(!await saveOff(z) && await needText(z) === null && !/Room \d+ of|Row \d+ of/.test(await z.textContent("#sideTag")), "with its 1 photo tapped, the edit can be saved (the rule is 3 only for new readings), and nothing shows rooms or rows of");
     await z.click("#saveBtn"); await z.waitForFunction(() => !STATE.editing && !STATE.photos.length);
-    ok(await z.evaluate(() => STATE.readings.filter(r => r.id === "oldfew01").length === 1 && STATE.readings.find(r => r.id === "oldfew01").edits.length === 1 && STATE.readings.length === 3), "saved as the same reading, with its edit history");
+    ok(await z.evaluate(() => { const r = STATE.readings.find(r => r.id === "oldfew01"); return STATE.readings.filter(x => x.id === "oldfew01").length === 1 && r.edits.length === 1 && r.rowsPerRoom === 10 && r.roomsPerBarn === 8 && STATE.readings.length === 3; }),
+       "saved as the same reading, with its edit history, and the rows per room and rooms per barn it already had");
     ok(!Z.pg.errs.length, "no page errors" + Z.pg.errs.join("; "));
     await Z.c.close();
 
