@@ -370,6 +370,19 @@ async function main() {
   await page.click("#siteView >> text=+ New reading here");
   await page.waitForFunction(() => VIEW.name === "measure");
   ok(await page.isVisible("#measureView") && (await page.inputValue("#fSite")) === SITE && (await page.inputValue("#fBarn")) === "Farrowing 2", "+ New reading here opens measuring at that site");
+  { // + New reading on the dashboard is a new site: blank location. On a site's page it continues that site.
+    const loc = await page.evaluate(() => Object.assign({}, STATE.loc)), toDash = async () => { await page.evaluate(() => { location.hash = "#/"; }); await page.waitForFunction(() => VIEW.name === "dash"); };
+    await page.evaluate(() => STATE.photos.push({id: "pending", status: "done"}));        // a reading under way (photos taken) is left alone
+    await toDash(); await page.click("#newReadingBtn"); await page.waitForFunction(() => VIEW.name === "measure");
+    ok(await page.inputValue("#fSite") === loc.site && await page.inputValue("#fBarn") === loc.barn, "+ New reading with photos already taken keeps the reading under way");
+    await page.evaluate(() => STATE.photos.pop());
+    await toDash(); await page.click("#newReadingBtn"); await page.waitForFunction(() => VIEW.name === "measure");
+    const vals = await page.evaluate(() => ["#fSite", "#fBarn", "#fRoom", "#fRow", "#fCrate", "#fNote"].map(s => document.querySelector(s).value));
+    ok(vals.every(v => v === "") && await page.evaluate(() => Object.values(STATE.loc).every(v => !v)), "+ New reading on the dashboard starts a new site: every location field is blank (" + vals.join("|") + ")");
+    ok((await page.$$eval("#measureCrumbs a", a => a.map(x => x.textContent))).join() === "‹ Dashboard", "and the page doesn't link back to the last site");
+    ok(await page.evaluate(() => JSON.parse(localStorage.getItem("tribar.v1")).loc.site) === "", "and the blank location is what's saved on the iPad");
+    for (const [id, k] of [["#fSite", "site"], ["#fBarn", "barn"], ["#fRoom", "room"], ["#fRow", "row"], ["#fCrate", "crate"], ["#fNote", "note"]]) await page.fill(id, loc[k] || "");     // back to where the next checks expect
+  }
 
   /* ---- a 401 renews the token once ---- */
   D.expired.add("AT1");
