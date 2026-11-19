@@ -982,7 +982,12 @@ function renderSaved(){
         r.files ? el("span", {class:"cloud" + (r.synced ? "" : " wait"), title:r.synced ? "Backed up to Dropbox" : "Not backed up yet",
                               text:r.synced ? "☁ Backed up" : "⏳ Not backed up"}) : null,
         marked.length ? el("button", {class:"btn sm", title:"Share the marked-up photo", text:"🖼 Share", onclick:() => shareMarked(r)}) : null,
-        el("button", {class:"btn sm ghost", title:"Delete reading", text:"🗑", onclick:() => deleteReading({r, local:r, team:!!r.synced})}),
+        el("button", {class:"btn sm ghost", title:"Delete reading", text:"🗑", onclick:() => {
+          if (!confirm("Delete the reading for " + locLabel(r) + "?" + (r.files && !r.synced ? " It hasn’t been backed up to Dropbox." : ""))) return;
+          for (const f of r.files || []) TribarSync.IDB.del(f.key).catch(() => {});
+          shareCache.delete(r.id);
+          STATE.readings = STATE.readings.filter(x => x !== r); persist(); renderSaved();
+        }}),
       ]),
     ]));
   }
@@ -1080,7 +1085,7 @@ async function sync(ev){
   SYNC.busy = true; SYNC.error = null; SYNC.note = ""; renderSync();
   try{
     const res = await TribarSync.syncAll(STATE.readings, {label:fileLabel, csv:csvFor, persist,
-      progress:t => { SYNC.note = t; renderSync(); }, deleteFailed:m => toast(m.join(" "))});
+      progress:t => { SYNC.note = t; renderSync(); }});
     announceRemoved(res.removed);
     if (!res.error){ if (res.done) SYNC.last = new Date(); }
     else if (res.error.code === "auth" && !TribarSync.signedIn()) SYNC.error = null;          // signed out: the bar says so
@@ -1414,7 +1419,7 @@ function redrawTeamViews(){
 function allReadings(){
   const out = new Map(), idx = TEAM.index;
   if (idx) for (const e of Object.values(idx.readings)){
-    if (TribarSync.isDeleted(e.r, e.dir.split("/").pop())) continue;         // the team deleted it (the index may be older than that)
+    if (TribarSync.isDeleted(e)) continue;                                   // its site was deleted (the index may be older than that)
     out.set(e.r.id, {r:e.r, key:TribarSync.siteKey(e.r.site || e.dir.split("/").pop()), dir:e.dir, team:true, local:null});
   }
   for (const r of STATE.readings){
@@ -1559,8 +1564,7 @@ function renderSitePage(){
       td("That bar", [r.worstBar != null ? pct(r.worstBar) : "—"]),
       td("Saved", [el("span", {class:"nowrap", text:fmtDay(r.savedAt)}), r.by ? el("span", {class:"small", text:r.by}) : null]),
       td("Backup", [waiting(e) ? el("span", {class:"pill wait", text:"⏳ This iPad only"}) : el("span", {class:"pill ok", text:"☁ Backed up"})]),
-      td("", [marked.length ? el("button", {class:"btn sm", text:"🖼 Photo" + (marked.length > 1 ? "s" : ""), onclick:() => openPhotos(e)}) : null,
-              el("button", {class:"btn sm ghost", title:"Delete reading", text:"🗑", onclick:() => deleteReading(e)})], "acts"),
+      td("", [marked.length ? el("button", {class:"btn sm", text:"🖼 Photo" + (marked.length > 1 ? "s" : ""), onclick:() => openPhotos(e)}) : null], "acts"),
     ]));
   }
   box.appendChild(el("table", {class:"dtable"}, [el("thead", {}, [el("tr", {}, ["Location", "Loss", "Worst spot", "That bar", "Saved", "Backup", ""].map(h => el("th", {text:h})))]), tb]));
@@ -1595,17 +1599,14 @@ function dropLocal(pred){
   for (const r of gone) shareCache.delete(r.id);
   persist(); return gone;
 }
-// Readings another iPad (or a delete) removed from the team folder were taken off this one: say so
+// Readings this iPad had backed up from a site that was deleted were taken off it: say so
 function announceRemoved(list){
   if (!list || !list.length) return;
   for (const x of list) shareCache.delete(x.r.id);
-  const sites = new Map(); let single = 0;
-  for (const x of list){
-    if (x.why === "site"){ const v = sites.get(x.name) || {n:0, by:x.by, at:x.at}; v.n++; sites.set(x.name, v); } else single++;
-  }
-  const parts = [...sites].map(([name, v]) => v.n + " reading" + (v.n === 1 ? "" : "s") + " at " + name + " (the site was deleted" + (v.by ? " by " + v.by : "") + " " + fmtDay(v.at) + ")");
-  if (single) parts.push(single + " reading" + (single === 1 ? "" : "s") + " someone deleted");
-  SYNC.notice = "Removed from this iPad because the team deleted them: " + parts.join("; ") + ".";
+  const sites = new Map();
+  for (const x of list){ const v = sites.get(x.name) || {n:0, by:x.by, at:x.at}; v.n++; sites.set(x.name, v); }
+  SYNC.notice = "Removed from this iPad because the team deleted the site: " +
+    [...sites].map(([name, v]) => v.n + " backed-up reading" + (v.n === 1 ? "" : "s") + " at " + name + " (deleted" + (v.by ? " by " + v.by : "") + " " + fmtDay(v.at) + ")").join("; ") + ".";
   toast(SYNC.notice); persist(); renderSaved();
 }
 async function deleteSite(s){
@@ -1616,40 +1617,25 @@ async function deleteSite(s){
   try{
     await refreshTeam(true);                                  // counts from the team folder as it is now
     const key = TribarSync.siteKey(s.name), cur = allSites().find(x => x.key === key) || s;
-    const nR = cur.readings.length, nP = cur.readings.reduce((n, e) => n + ((e.r.photos || []).length), 0);
+    const unsent = cur.readings.filter(e => e.local && !e.local.synced), gone = cur.readings.filter(e => !unsent.includes(e));
+    const nR = gone.length, nP = gone.reduce((n, e) => n + ((e.r.photos || []).length), 0);
     const typed = prompt("Delete the site " + cur.name + "?\n\nThis deletes its Dropbox folder with " + nR + " reading" + (nR === 1 ? "" : "s") + " and " + nP + " photo" + (nP === 1 ? "" : "s") +
-      " for everyone, and the copies on this iPad. Dropbox keeps the folder in its deleted files, where it can be restored.\n\nType the site name to confirm:");
+      " for everyone, and the backed-up copies on this iPad. Dropbox keeps the folder in its deleted files, where it can be restored." +
+      (unsent.length ? "\n\n" + unsent.length + " reading" + (unsent.length === 1 ? " on this iPad hasn’t" : "s on this iPad haven’t") + " been backed up, so " + (unsent.length === 1 ? "it is" : "they are") +
+                       " kept and will upload again, which brings the site back." : "") +
+      "\n\nType the site name to confirm:");
     if (typed == null) return;
     if (typed.trim().toLowerCase() !== String(cur.name).trim().toLowerCase()) return toast("That isn’t the site name, so nothing was deleted.");
     toast("Deleting " + cur.name + "…");
     let res;
-    try{ res = await TribarSync.deleteSite(cur.name, true); }
+    try{ res = await TribarSync.deleteSite(cur.name); }
     catch(e){ return toast("Couldn’t delete " + cur.name + ": " + e.message); }
-    dropLocal(r => TribarSync.siteKey(r.site) === key);
+    dropLocal(r => TribarSync.siteKey(r.site) === key && r.synced);          // never one that isn't backed up: it's the only copy
     renderSaved(); go("#/");
     toast("Deleted " + cur.name + ": " + nR + " reading" + (nR === 1 ? "" : "s") + ", " + nP + " photo" + (nP === 1 ? "" : "s") + ". Dropbox keeps it in its deleted files." +
+          (unsent.length ? " " + unsent.length + " not backed up, kept." : "") +
           (res.queued ? " The list that stops other iPads bringing it back couldn’t be updated yet; it will be at the next sync." : ""));
-    await refreshTeam(true); if (res.queued) sync();
-  } finally { DELETING = false; }
-}
-async function deleteReading(e){
-  const r = e.r, local = e.local;
-  const unbacked = !!(local && local.files && !local.synced);
-  const inDropbox = !!(e.team || (local && (local.synced || (local.files || []).some(f => f.uploaded))));
-  if (!confirm("Delete the reading for " + locLabel(r) + "?" + (unbacked ? " It hasn’t been backed up to Dropbox." : "") +
-               (inDropbox ? " It is deleted from the team folder in Dropbox too (Dropbox keeps it in its deleted files, where it can be restored)." : ""))) return;
-  if (DELETING) return toast("Another delete is still running.");
-  DELETING = true;
-  try{
-    let queued = false;
-    if (inDropbox){
-      try{ queued = (await TribarSync.deleteReading(r, TribarSync.signedIn() && navigator.onLine !== false)).queued; }
-      catch(err){ return toast("Couldn’t delete the reading from Dropbox: " + err.message); }
-    }
-    dropLocal(x => x.id === r.id);
-    renderSaved(); if (VIEW.name !== "measure") redrawTeamViews();
-    if (queued) toast("Removed from this iPad. It will be deleted from Dropbox at the next sync.");
-    if (inDropbox) sync();                                     // rebuilds the site's summary (CSV) and looks at the team folder again
+    await refreshTeam(true); if (res.queued || unsent.length) sync();
   } finally { DELETING = false; }
 }
 
