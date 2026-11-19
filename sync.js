@@ -162,6 +162,7 @@ function createDropboxFiles(o) {
     if (status === 422 && /invalid_root/.test(sum)) return t('server', 'Dropbox didn’t accept the team space for this account (invalid root). Tell the person who set up the app.');
     if (status === 403 || /no_write_permission|no_permission|team_access|restricted_content|access_denied/.test(sum)) return t('denied', 'Dropbox says you don’t have access to the “' + shortName + '” folder. Ask the admin to share it with you.');
     if (status === 409 && /not_found/.test(sum)) return t('missing', (what || 'That') + ' isn’t in Dropbox.');
+    if (status === 409 && /conflict/.test(sum)) return t('conflict', 'Someone else changed that file at the same moment.');
     return t('server', 'Dropbox returned an error (' + status + (sum ? ': ' + String(sum).slice(0, 80) : '') + ').');
   }
   async function token(renew) {
@@ -193,7 +194,19 @@ function createDropboxFiles(o) {
   return {
     base,
     ensureFolder,
-    upload: (path, body) => call('up', 'files/upload', { path, mode: { '.tag': 'overwrite' }, autorename: false, mute: true }, body),
+    // rev undefined: replace whatever is there. rev null: only if nothing is there yet. rev "abc": only if it is still that version
+    // (the other two end in a 'conflict' error, so two iPads editing the same list never overwrite each other).
+    upload: (path, body, rev) => call('up', 'files/upload', { path, mode: rev === undefined ? { '.tag': 'overwrite' } : rev === null ? { '.tag': 'add' } : { '.tag': 'update', update: rev }, autorename: false, mute: true }, body),
+    async metadata(path) { return (await call('rpc', 'files/get_metadata', { path })).json(); },
+    // to Dropbox's deleted files (restorable there); a path that is already gone counts as deleted
+    async remove(path) { try { await call('rpc', 'files/delete_v2', { path }); return true; } catch (e) { if (e.code === 'missing') return false; throw e; } },
+    // the folder's entries, or null when the folder doesn't exist
+    async listOrNull(path) {
+      let r; try { r = await call('rpc', 'files/list_folder', { path, recursive: false, limit: 2000 }); } catch (e) { if (e.code === 'missing') return null; throw e; }
+      let j = await r.json(), entries = j.entries || [];
+      while (j.has_more) { r = await call('rpc', 'files/list_folder/continue', { cursor: j.cursor }); j = await r.json(); entries = entries.concat(j.entries || []); }
+      return entries;
+    },
     async list(path, recursive) {
       let r; try { r = await call('rpc', 'files/list_folder', { path, recursive: !!recursive, limit: 2000 }); } catch (e) { if (e.code === 'missing') return []; throw e; }
       let j = await r.json(), entries = j.entries || [];
@@ -282,19 +295,28 @@ function syncAll(readings, hooks) { return running || (running = doSync(readings
 // Readings already backed up without who saved them (saved before "by" existed, or while the account wasn't
 // loaded): their JSON goes up again with the signed-in name, once.
 const missingBy = readings => readings.filter(r => r.synced && !r.by);
+async function ensureClient() {
+  if (client) return;
+  await init();
+  if (!getAuth().signedIn()) throw new SyncError("auth", "Sign in to Dropbox again.");
+  if (!client) throw new SyncError("offline", "Can’t read your Dropbox account yet. Will try again.");
+}
 async function doSync(readings, hooks) {
-  const todo = readings.filter(r => !r.synced).reverse();
-  if (!todo.length && !pending().length && !missingBy(readings).length) return {done: 0, left: 0};
-  if (!getAuth().signedIn()) return {done: 0, left: todo.length, error: null};
-  if (typeof navigator !== "undefined" && navigator.onLine === false) return {done: 0, left: todo.length, error: null};
-  let done = 0;
+  const idle = () => !readings.some(r => !r.synced) && !pending().length && !missingBy(readings).length && !queue().length;
+  const signedIn = getAuth().signedIn(), offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  if (!signedIn || offline) return {done: 0, left: readings.filter(r => !r.synced).length, error: null, removed: []};
+  let done = 0, removed = [];
   try {
-    if (!client) {
-      await init();
-      if (!getAuth().signedIn()) throw new SyncError("auth", "Sign in to Dropbox again.");
-      if (!client) throw new SyncError("offline", "Can’t read your Dropbox account yet. Will try again.");
-    }
+    await ensureClient();
     await client.ensureFolder();
+    // Before anything goes up: what the team has deleted. Readings of a deleted site (saved before it was deleted) and
+    // deleted readings are removed from this iPad, never uploaded: otherwise this iPad would bring them back.
+    await readDeleted();
+    removed = purge(readings);
+    if (removed.length) hooks.persist();
+    if (queue().length) await processQueue(hooks);
+    if (idle()) return {done: 0, left: 0, removed};
+    const todo = readings.filter(r => !r.synced).reverse();
     const folders = await siteFolders();
     for (const r of todo) {
       const site = folderFor(folders, r.site), dir = BASE + "/" + site, name = stem(r, hooks.label(r));
@@ -325,24 +347,154 @@ async function doSync(readings, hooks) {
       markCsv(p.dir, p.site, false);
     }
   } catch (e) {
-    return {done, left: todo.length - done, error: e};
+    return {done, left: readings.filter(r => !r.synced).length, error: e, removed};
   }
-  return {done, left: 0};
+  return {done, left: 0, removed};
 }
 
 // The site's CSV from every reading in its folder, whichever device saved it. Readings this device uploaded are
 // read from the device rather than downloaded again.
 async function rebuildCsv(dir, site, local, hooks) {
   const mine = new Map(local.filter(r => r.synced).map(r => [r.id, r]));
+  const csvPath = dir + "/Tribar readings - " + (safe(site) || "No site") + ".csv";
+  const entries = await client.listOrNull(dir);
+  if (entries === null) return;                       // the folder is gone (deleted): a summary must not bring it back
   const rows = [];
-  for (const e of (await client.list(dir)).filter(x => x[".tag"] === "file" && /\.json$/i.test(x.name) && x.name !== STATUS_FILE)) {
+  for (const e of entries.filter(x => x[".tag"] === "file" && /\.json$/i.test(x.name) && x.name !== STATUS_FILE)) {
     const own = mine.get(idOfJson(e.name));
     if (own) { rows.push(record(own)); continue; }
     let j = null; try { j = JSON.parse(await client.download(e.path_lower)); } catch (err) { if (err instanceof SyncError) throw err; /* unreadable JSON: skip it */ }
     if (j && j.id) rows.push(j);
   }
+  if (!rows.length) { await client.remove(csvPath); return; }    // the last reading was deleted: no summary of nothing
   rows.sort((a, b) => String(a.savedAt).localeCompare(String(b.savedAt)));
-  await client.upload(dir + "/Tribar readings - " + (safe(site) || "No site") + ".csv", new Blob([hooks.csv(rows)], {type: "text/csv"}));
+  await client.upload(csvPath, new Blob([hooks.csv(rows)], {type: "text/csv"}));
+}
+
+/* ---------------- deleting a site ----------------
+   A site's whole Dropbox folder is deleted with files/delete_v2: it lands in Dropbox's deleted files and can be
+   restored there. Other iPads still hold their own copies of readings they had backed up, and a sync would upload them
+   again, so the delete is also written to
+       <folder>/Deleted sites.json
+   {sites: {<siteKey>: {key, name, at, by}}}. Every sync reads it before uploading anything: a local reading that was
+   already backed up (r.synced) before the site was deleted is removed from the device (purge). A reading that was never
+   uploaded is the only copy: it is never removed, it uploads as usual, even if that recreates the site. Readings backed
+   up after the deletion are new work too. The file is merged on every write (read, add, write back only if nobody else
+   changed it in between), never overwritten.
+   The delete is first put in a queue kept on the device (tribar.dbx.deleteQueue). If the folder is deleted but the list
+   can't be written (the signal went), the entry stays there and a later sync finishes it. */
+const DELETED_FILE = "Deleted sites.json", DEL_KEY = "deleted-sites", DQ = "tribar.dbx.deleteQueue";
+let del = {sites: {}, rev: null};          // the last copy of the list that this device saw
+const noDeleted = () => ({sites: {}, rev: null});
+const queue = () => jget(DQ, []);
+const saveEntry = e => jput(DQ, queue().filter(x => x.key !== e.key).concat([e]));
+const dropEntry = e => jput(DQ, queue().filter(x => x.key !== e.key));
+const who = () => (acct && acct.name) || (jget(CONFIG.keys.account, {}) || {}).name || "";
+const parseDeleted = text => ({sites: JSON.parse(text).sites || {}});
+async function loadDeleted() {
+  const c = await IDB.getObj(DEL_KEY).catch(() => null);
+  if (c) del = {sites: c.sites || {}, rev: c.rev || null};
+  overlayQueue();
+  return del;
+}
+const keepDeleted = () => IDB.putObj(DEL_KEY, del).catch(() => {});
+// a delete whose folder is gone but whose list entry is still queued counts as deleted too
+function overlayQueue() { for (const e of queue()) if (e.filesDone) del.sites[e.key] = {key: e.key, name: e.name, at: e.at, by: e.by}; }
+// Is this reading of the team's index (an index entry: {r, dir, modified}) from a folder that was deleted since? The time is
+// when it reached Dropbox, so a reading uploaded after the deletion is new work and shows.
+function isDeleted(e) {
+  const s = del.sites[siteKey(e.r.site || e.dir.split("/").pop())];
+  return !!s && Date.parse(e.modified || e.r.savedAt) < Date.parse(s.at);
+}
+// The list from Dropbox (downloaded only when its version changed). A list that can't be read stops the sync: carrying
+// on would upload what the team deleted.
+async function readDeleted() {
+  let meta;
+  try { meta = await client.metadata(BASE + "/" + DELETED_FILE); }
+  catch (e) { if (e.code !== "missing") throw e; del = noDeleted(); overlayQueue(); await keepDeleted(); return del; }
+  if (del.rev === meta.rev) { overlayQueue(); return del; }
+  let j; try { j = parseDeleted(await client.download(BASE + "/" + DELETED_FILE)); }
+  catch (e) { if (e instanceof SyncError) throw e; throw new SyncError("server", "“" + DELETED_FILE + "” in the team folder can’t be read, so nothing was uploaded. Ask the person who set up the app."); }
+  del = Object.assign(j, {rev: meta.rev}); overlayQueue(); await keepDeleted();
+  return del;
+}
+// Add a site to the list in Dropbox: {key, name, at, by}
+async function addDeleted(site) {
+  const path = BASE + "/" + DELETED_FILE;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    let meta = null, cur = {sites: {}};
+    try { meta = await client.metadata(path); cur = parseDeleted(await client.download(path)); }
+    catch (e) {
+      if (e.code === "missing") meta = null;
+      else if (e instanceof SyncError) throw e;
+      else throw new SyncError("server", "“" + DELETED_FILE + "” can’t be read, so it wasn’t changed.");
+    }
+    const was = cur.sites[site.key];
+    if (!was || Date.parse(site.at) >= Date.parse(was.at)) cur.sites[site.key] = site;
+    try { await client.upload(path, new Blob([JSON.stringify({sites: cur.sites}, null, 1)], {type: "application/json"}), meta ? meta.rev : null); }
+    catch (e) { if (e.code === "conflict") continue; throw e; }
+    del = {sites: cur.sites, rev: null};      // our own write: read it back (and its version) next time
+    await keepDeleted(); return;
+  }
+  throw new SyncError("server", "Couldn’t update “" + DELETED_FILE + "”: another iPad kept changing it. Try again.");
+}
+// Take readings off this device with their photos; returns them
+function removeLocal(readings, pred) {
+  const gone = [];
+  for (let i = readings.length - 1; i >= 0; i--) if (pred(readings[i])) { gone.unshift(readings[i]); readings.splice(i, 1); }
+  for (const r of gone) for (const f of r.files || []) IDB.del(f.key).catch(() => {});
+  return gone;
+}
+// Readings of a deleted site that were backed up before it was deleted come off this device. Never one that wasn't
+// backed up (the only copy), and never one backed up after the deletion. Returns [{r, name, by, at}] for the message.
+function purge(readings) {
+  const why = new Map();
+  const gone = removeLocal(readings, r => {
+    const s = del.sites[siteKey(r.site)];
+    if (!s || !r.synced || !(Date.parse(r.synced) < Date.parse(s.at))) return false;
+    why.set(r.id, {name: s.name, by: s.by, at: s.at}); return true;
+  });
+  // a summary still to rebuild for a site that was deleted would only bring its folder back (rebuildCsv checks, but drop them anyway)
+  if (gone.length) for (const p of pending()) if (del.sites[siteKey(p.site)] && !readings.some(r => siteKey(r.site) === siteKey(p.site))) markCsv(p.dir, p.site, false);
+  return gone.map(r => Object.assign({r}, why.get(r.id)));
+}
+// Work one queued delete off: the folder(s), then the list; progress is written back to the queue
+async function runEntry(e) {
+  if (!e.filesDone) {
+    const folders = (await client.listOrNull(BASE) || []).filter(x => x[".tag"] === "folder" && siteKey(x.name) === e.key).map(x => x.name);
+    for (const n of folders) await client.remove(BASE + "/" + n);
+    e.filesDone = true; saveEntry(e);
+  }
+  await addDeleted({key: e.key, name: e.name, at: e.at, by: e.by});
+  for (const p of pending()) if (siteKey(p.site) === e.key) markCsv(p.dir, p.site, false);
+  dropEntry(e);
+}
+async function processQueue(hooks) {
+  for (const e of queue()) {
+    hooks && hooks.progress && hooks.progress("Deleting " + e.name + " from the team folder");
+    await runEntry(e);
+  }
+}
+// Delete a site now (needs signal). Returns {queued: true} when only the list entry is left for a later sync; throws,
+// leaving nothing queued, when the folder couldn't be deleted.
+function deleteSite(name) {
+  const prev = running, entry = {key: siteKey(name), name: safe(name) || "No site"};
+  const op = (async () => {
+    if (prev) await prev.catch(() => {});
+    entry.at = new Date().toISOString(); entry.by = who(); entry.filesDone = false;
+    saveEntry(entry);
+    try { await ensureClient(); await client.ensureFolder(); await runEntry(entry); return {queued: false}; }
+    catch (e) {
+      const q = queue().find(x => x.key === entry.key);
+      if (q && q.filesDone) return {queued: true, error: e};                      // gone from Dropbox; only the list is left
+      dropEntry(entry); throw e;
+    }
+  })();
+  // a sync that starts while this runs waits for it (and gets this); the slot is freed before the caller continues
+  const result = () => ({done: 0, left: 0}), wrapped = op.then(result, result), free = () => { if (running === wrapped) running = null; };
+  op.then(free, free);
+  running = wrapped;
+  return op;
 }
 
 /* ---------------- the team folder, for the dashboard ----------------
@@ -360,7 +512,18 @@ function compact(r) {
   delete x.synced;
   return x;
 }
-const cachedIndex = () => IDB.getObj(INDEX_KEY).catch(() => null);
+// What the dashboard shows of an index: without the readings and sites the team deleted (as far as this device knows)
+function visible(idx) {
+  if (!idx) return idx;
+  const out = Object.assign({}, idx, {readings: {}, sites: {}});
+  for (const [p, e] of Object.entries(idx.readings || {})) if (!isDeleted(e)) out.readings[p] = e;
+  for (const [k, s] of Object.entries(idx.sites || {})) {
+    const dead = del.sites[k] && !Object.values(out.readings).some(e => e.key === k);
+    if (!dead) out.sites[k] = s;
+  }
+  return out;
+}
+const cachedIndex = async () => { await loadDeleted(); return visible(await IDB.getObj(INDEX_KEY).catch(() => null)); };
 let indexing = null;
 function teamIndex(local) { return indexing || (indexing = buildIndex(local).finally(() => { indexing = null; })); }
 async function buildIndex(local) {
@@ -368,29 +531,32 @@ async function buildIndex(local) {
   if (typeof navigator !== "undefined" && navigator.onLine === false) throw new SyncError("offline", "No signal.");
   if (!client) { await init(); if (!client) throw new SyncError(getAuth().signedIn() ? "offline" : "auth", "Can’t read your Dropbox account yet."); }
   await client.ensureFolder();
-  const prev = (await cachedIndex()) || {readings: {}};
+  await readDeleted();
+  const prev = (await IDB.getObj(INDEX_KEY).catch(() => null)) || {readings: {}};
   const mine = new Map((local || []).map(r => [r.id, r]));     // this iPad's: same reading, no need to download it (even mid-upload)
   const baseLower = BASE.toLowerCase() + "/", next = {at: Date.now(), sites: {}, readings: {}};
   const statusFiles = [], toFetch = [];
   for (const e of await client.list(BASE, true)) {
     if (!e.path_lower || !e.path_lower.startsWith(baseLower)) continue;
     const rel = e.path_display.slice(BASE.length + 1).split("/");
+    if (e[".tag"] === "file" && rel.length === 1) continue;       // a file in the base folder (Deleted sites.json) isn't a site
     const key = siteKey(rel[0]), dir = BASE + "/" + rel[0];
     if (!next.sites[key]) next.sites[key] = {name: rel[0], dir, status: "current"};
     if (e[".tag"] !== "file" || rel.length !== 2 || !/\.json$/i.test(e.name)) continue;
     if (e.name === STATUS_FILE) { statusFiles.push({key, e}); continue; }
     const was = prev.readings[e.path_lower], own = mine.get(idOfJson(e.name));
-    if (own) next.readings[e.path_lower] = {rev: e.rev, key, dir, r: compact(record(own))};
-    else if (was && was.rev === e.rev) next.readings[e.path_lower] = Object.assign({}, was, {key, dir});
-    else toFetch.push({e, key, dir});
+    const modified = e.server_modified || (own && own.synced) || null;
+    if (own) next.readings[e.path_lower] = {rev: e.rev, key, dir, modified, r: compact(record(own))};
+    else if (was && was.rev === e.rev) next.readings[e.path_lower] = Object.assign({}, was, {key, dir, modified});
+    else toFetch.push({e, key, dir, modified});
   }
   // download what's new, four at a time
   let i = 0;
   const worker = async () => {
     while (i < toFetch.length) {
-      const {e, key, dir} = toFetch[i++];
+      const {e, key, dir, modified} = toFetch[i++];
       let j = null; try { j = JSON.parse(await client.download(e.path_lower)); } catch (err) { if (err instanceof SyncError && err.code !== "missing") throw err; }
-      if (j && j.id) next.readings[e.path_lower] = {rev: e.rev, key, dir, r: compact(j)};
+      if (j && j.id) next.readings[e.path_lower] = {rev: e.rev, key, dir, modified, r: compact(j)};
     }
   };
   await Promise.all([worker(), worker(), worker(), worker()]);
@@ -401,7 +567,7 @@ async function buildIndex(local) {
     if (st) Object.assign(next.sites[key], {status: st.status === "past" ? "past" : "current", statusAt: st.statusAt || null, statusBy: st.statusBy || null, statusRev: e.rev});
   }
   await IDB.putObj(INDEX_KEY, next).catch(() => {});
-  return next;
+  return visible(next);
 }
 // Mark a site complete ("past") or back in progress ("current"), for everyone: a small file in its folder
 async function setSiteStatus(site, status) {
@@ -418,9 +584,9 @@ async function teamFile(dir, name) {
 
 // Bump with any change index.html depends on: the page checks it, and fetches both files fresh if they don't match
 // (a browser can pair a new page with a cached copy of the old sync.js for a few minutes after an update).
-const VERSION = 3;
+const VERSION = 4;
 root.TribarSync = {VERSION, CONFIG, IDB, init, signIn, signOut, syncAll, redirectUri, SyncError, createDropboxAuth, createDropboxFiles,
-  teamIndex, cachedIndex, setSiteStatus, teamFile, compact, siteKey, folderName: site => safe(site) || "No site",
+  teamIndex, cachedIndex, setSiteStatus, teamFile, compact, siteKey, deleteSite, loadDeleted, purge, isDeleted, siteDeleted: key => !!del.sites[key], removeLocal, folderName: site => safe(site) || "No site",
   dropboxUrl: site => "https://www.dropbox.com/home/" + (CONFIG.folder + "/" + (safe(site) || "No site")).split("/").map(encodeURIComponent).join("/"),
-  signedIn: () => getAuth().signedIn(), account: () => acct, pendingCsv: () => pending().length};
+  signedIn: () => getAuth().signedIn(), account: () => acct, pendingCsv: () => pending().length, pendingDeletes: () => queue().length};
 })(typeof self !== "undefined" ? self : globalThis);

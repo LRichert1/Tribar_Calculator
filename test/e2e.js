@@ -14,7 +14,8 @@
    every JSON in the site folder (including another iPad's), token refresh
    after a 401, offline then online, a missing base folder, the marked-up
    photo, Share, the in-app camera's size label, the [hidden] fix, the
-   offline cache, and the phone-width layout. */
+   offline cache, the phone-width layout, and deleting a site with two iPads
+   (the deleted list that stops the other iPad bringing back what it had backed up). */
 "use strict";
 const http = require("http"), fs = require("fs"), path = require("path"), crypto = require("crypto");
 const { chromium } = require("playwright");
@@ -39,12 +40,12 @@ const server = http.createServer((req, res) => {
 
 /* ---------------- fake Dropbox ---------------- */
 function fakeDropbox({baseExists = true} = {}) {
-  const D = {files: new Map(), folders: new Set(), log: [], authorize: [], tokenCalls: [], expired: new Set(), issued: 0};
+  const D = {files: new Map(), folders: new Set(), log: [], authorize: [], tokenCalls: [], expired: new Set(), issued: 0, deleted: []};
   const low = p => p.toLowerCase();
   const addFolder = p => { const parts = p.split("/").filter(Boolean); for (let i = 1; i <= parts.length; i++) D.folders.add(low("/" + parts.slice(0, i).join("/"))); };
   if (baseExists) addFolder(BASE);
   let revs = 0;
-  D.put = (p, body) => { addFolder(p.slice(0, p.lastIndexOf("/"))); D.files.set(low(p), {path: p, body: Buffer.from(body), rev: "r" + (++revs)}); };
+  D.put = (p, body) => { addFolder(p.slice(0, p.lastIndexOf("/"))); D.files.set(low(p), {path: p, body: Buffer.from(body), rev: "r" + (++revs), modified: new Date().toISOString()}); };
   const CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Authorization, Content-Type, Dropbox-API-Arg, Dropbox-API-Path-Root",
                 "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Expose-Headers": "Dropbox-API-Result"};
   const json = (route, status, obj) => route.fulfill({status, headers: Object.assign({"Content-Type": "application/json"}, CORS), body: JSON.stringify(obj)});
@@ -82,9 +83,24 @@ function fakeDropbox({baseExists = true} = {}) {
       const team = h["dropbox-api-path-root"] === JSON.stringify({".tag": "root", root: "7777"});
       const arg = u.host.startsWith("content") ? JSON.parse(h["dropbox-api-arg"]) : JSON.parse(req.postData() || "null");
       const p = arg && arg.path;
-      if (endpoint === "files/get_metadata") return team && (D.folders.has(low(p)) || D.files.has(low(p))) ? json(route, 200, {".tag": "folder", name: p.split("/").pop(), path_lower: low(p)}) : notFound(route);
+      if (endpoint === "files/get_metadata") {
+        if (team && D.files.has(low(p))) { const f = D.files.get(low(p)); return json(route, 200, {".tag": "file", name: f.path.split("/").pop(), path_lower: low(p), path_display: f.path, rev: f.rev}); }
+        return team && D.folders.has(low(p)) ? json(route, 200, {".tag": "folder", name: p.split("/").pop(), path_lower: low(p)}) : notFound(route);
+      }
+      if (endpoint === "files/delete_v2") {
+        if (!team || D.denyDelete) return json(route, 403, {error_summary: "path_lookup/no_permission/.."});
+        const isFolder = D.folders.has(low(p)), isFile = D.files.has(low(p));
+        if (!isFolder && !isFile) return notFound(route);
+        D.deleted.push(p);
+        if (isFile) D.files.delete(low(p));
+        else { for (const k of [...D.files.keys()]) if (k.startsWith(low(p) + "/")) D.files.delete(k); for (const f of [...D.folders]) if (f === low(p) || f.startsWith(low(p) + "/")) D.folders.delete(f); }
+        return json(route, 200, {metadata: {name: p.split("/").pop(), path_lower: low(p)}});
+      }
       if (endpoint === "files/upload") {
         if (!team) return json(route, 403, {error_summary: "path/no_write_permission/.."});
+        if (D.onUpload) { const hook = D.onUpload; D.onUpload = null; hook(p); }          // another iPad writing just before this one lands
+        const was = D.files.get(low(p)), mode = arg.mode && arg.mode[".tag"];
+        if ((mode === "add" && was) || (mode === "update" && (!was || was.rev !== arg.mode.update))) return json(route, 409, {error_summary: "path/conflict/file/.."});
         D.put(p, req.postDataBuffer() || Buffer.alloc(0));
         return json(route, 200, {name: p.split("/").pop(), path_lower: low(p), path_display: p, rev: D.files.get(low(p)).rev});
       }
@@ -93,7 +109,7 @@ function fakeDropbox({baseExists = true} = {}) {
         const under = x => arg.recursive ? low(x).startsWith(low(p) + "/") : low(x.slice(0, x.lastIndexOf("/"))) === low(p);
         const folderOf = x => [...D.folders].find(f => f === low(x));
         const entries = [...D.files.values()].filter(f => under(f.path))
-          .map(f => ({".tag": "file", name: f.path.split("/").pop(), path_lower: low(f.path), path_display: f.path, rev: f.rev}));
+          .map(f => ({".tag": "file", name: f.path.split("/").pop(), path_lower: low(f.path), path_display: f.path, rev: f.rev, server_modified: f.modified}));
         for (const f of D.folders) if (arg.recursive ? f.startsWith(low(p) + "/") : f.slice(0, f.lastIndexOf("/")) === low(p))   // subfolders, like Dropbox
           entries.push({".tag": "folder", name: displayOf(f).split("/").pop(), path_lower: f, path_display: displayOf(f)});
         return json(route, 200, {entries, has_more: false, cursor: "c"});
@@ -294,7 +310,7 @@ async function main() {
   const downloads = () => D.log.filter(l => l.endpoint === "files/download").length;
   const dl0 = downloads();
   await page.click("#syncBtn");
-  await page.waitForFunction(() => !TEAM.busy && Date.now() - TEAM.index.at < 3000);
+  await page.waitForFunction(() => !TEAM.busy && !SYNC.busy && Date.now() - TEAM.index.at < 3000);
   ok(downloads() === dl0, "Sync now re-reads the team folder without downloading readings it already has");
   ok(/Team folder checked/.test(await page.textContent("#syncMsg")), "sync bar says when the team folder was checked");
   await page.fill("#dashSearch", "old");
@@ -536,6 +552,128 @@ async function main() {
     ok(opts.join(",") === "C9,C10,C044,C100" && (await p7.getAttribute("#fSite", "list")) === "siteList", "the Site field suggests each site once: " + opts.join(", "));
     ok(!errs7.length, "no page errors" + (errs7.length ? ": " + errs7.join("; ") : ""));
     await c7.close();
+  }
+
+  /* ---- deleting a site, with two iPads ---- */
+  {
+    const D8 = fakeDropbox(), LISTF = BASE + "/Deleted sites.json";
+    const rd = (id, site, day, extra = {}) => Object.assign({id, savedAt: "2026-11-" + day + "T15:00:00.000Z", site, barn: "B", room: "1", row: "1", crate: "1", band: "10-20%",
+      worstSpot: 0.15, by: "Other Inspector", photos: [{name: id + ".jpg", pick: {loss: 0.15}}], files: []}, extra);
+    // put a reading in Dropbox: its JSON, a marked-up and an original photo
+    const putReading = (dir, r) => { const n = BASE + "/" + dir + "/" + r.savedAt.slice(0, 10) + " B Room 1 Row 1 Crate 1 " + r.id;
+      r.files = [{kind: "marked", suffix: "marked 1.jpg", uploaded: true, dropboxName: n.split("/").pop() + " marked 1.jpg"}, {kind: "original", suffix: "photo 1.jpg", uploaded: true, dropboxName: n.split("/").pop() + " photo 1.jpg"}];
+      D8.put(n + ".json", JSON.stringify(r)); D8.put(n + " marked 1.jpg", "m"); D8.put(n + " photo 1.jpg", "o"); return n; };
+    const paths = () => [...D8.files.values()].map(f => f.path.slice(BASE.length + 1));
+    const tomb = () => { const f = D8.files.get(LISTF.toLowerCase()); return f ? JSON.parse(f.body) : null; };
+    const pad = async readings => {
+      const c = await browser.newContext({serviceWorkers: "block", viewport: {width: 1100, height: 900}}); await D8.install(c);
+      await c.addInitScript(rs => {
+        localStorage.setItem("tribar.dbx.tokens", JSON.stringify({access: "AT1", refresh: "RT", expiresAt: Date.now() + 3600e3}));
+        localStorage.setItem("tribar.dbx.account", JSON.stringify({name: "Test Inspector", rootNamespaceId: "7777"}));
+        if (!localStorage.getItem("tribar.v1")) localStorage.setItem("tribar.v1", JSON.stringify({readings: rs}));
+      }, readings);
+      const pg = await c.newPage(); pg.errs = []; pg.on("pageerror", e => pg.errs.push(e.message)); return {c, pg};
+    };
+    const idle = pg => pg.waitForFunction(() => !SYNC.busy && !SYNC.again && !TEAM.busy && TEAM.loaded && !TribarSync.pendingCsv() && !TribarSync.pendingDeletes(), null, {timeout: 20000})
+      .catch(async e => { console.log("not idle:", JSON.stringify(await pg.evaluate(() => ({busy: SYNC.busy, err: SYNC.error, team: TEAM.error, tbusy: TEAM.busy, csv: localStorage.getItem("tribar.dbx.csvPending"), q: localStorage.getItem("tribar.dbx.deleteQueue")})))); throw e; });
+    const dashRows = pg => pg.$$eval("#dashTable tbody tr", t => t.map(r => [r.cells[0].innerText.trim(), r.cells[1].innerText.trim()]));
+    const dashSites = async pg => (await dashRows(pg)).map(r => r[0]);
+    const inject = (pg, rs) => pg.evaluate(async rs => { for (const r of rs) for (const f of r.files || []) if (f.key) await TribarSync.IDB.put(f.key, new Blob(["x"], {type: "image/jpeg"}));
+      STATE.readings = rs.concat(STATE.readings); persist(); renderSaved(); }, rs);
+
+    // the team folder: C044 (3 readings, 4 photos, one of them iPad A's), Keep Farm (2 readings), and a file in the base folder
+    const oth1 = rd("oth00001", "C044", "01", {photos: [{name: "a.jpg"}, {name: "b.jpg"}]}), oth2 = rd("oth00002", "C044", "02"), mineA = rd("mineA001", "C-44", "03", {by: "Test Inspector"});
+    putReading("C044", oth1); putReading("C044", oth2); putReading("C044", mineA);
+    D8.put(BASE + "/C044/Tribar readings - C044.csv", "old csv");
+    putReading("Keep Farm", rd("keep0001", "Keep Farm", "04")); putReading("Keep Farm", rd("keep0002", "Keep Farm", "05"));
+    D8.put(BASE + "/Tribar readings - old notes.txt", "a file in the base folder is not a site");
+
+    /* iPad B: no signal, holding its own copies: C044 readings (one never uploaded, one backed up before without a name) and a Keep Farm one */
+    const B = await pad([]);
+    await B.pg.goto(APP); await idle(B.pg);
+    ok((await dashSites(B.pg)).join(",") === "C044,Keep Farm", "B sees C044 and Keep Farm, and the file in the base folder isn't a site: " + (await dashSites(B.pg)).join(", "));
+    await inject(B.pg, [rd("mineB001", "c 44", "10", {by: "Test Inspector", synced: false, files: [{key: "mineB001/m1", kind: "marked", suffix: "marked 1.jpg"}]}),
+                        rd("mineB002", "C 044", "11", {by: undefined, synced: "2026-11-11T16:00:00Z"}),
+                        rd("mineB003", "Keep Farm", "12", {by: "Test Inspector", synced: false})]);
+    await B.c.setOffline(true);
+
+    /* iPad A deletes the site; it also holds one reading that was never uploaded */
+    const A = await pad([Object.assign({}, mineA, {site: "C-44", synced: "2026-11-03T16:00:00Z", files: mineA.files})]);
+    await A.pg.goto(APP + "#/site/c-44"); await idle(A.pg);
+    await inject(A.pg, [rd("unsentA1", "C-44", "08", {by: "Test Inspector", synced: false})]);
+    await A.pg.evaluate(() => redrawTeamViews());
+    ok(await A.pg.$$eval("#siteView tbody tr", r => r.length) === 4, "A: the site page for C044 has the 3 readings in Dropbox and A's unsent one");
+    ok(await A.pg.$$eval("#siteView button[title='Delete reading']", b => b.length) === 0, "the site page has no Delete reading buttons");
+    let seen = null; A.pg.on("dialog", d => { seen = {type: d.type(), msg: d.message()}; d.accept(A.answer); });
+    A.answer = "not the name"; await A.pg.click("#siteView >> text=Delete site");
+    await A.pg.waitForFunction(() => /isn’t the site name/.test(document.querySelector("#toast").textContent), null, {timeout: 15000});
+    ok(seen && seen.type === "prompt" && /C044/.test(seen.msg) && /3 readings and 4 photos/.test(seen.msg) && /deleted files, where it can be restored/.test(seen.msg) && /Type the site name/.test(seen.msg),
+       "Delete site asks for the name and says what goes (" + (seen && seen.msg.replace(/\n+/g, " ").slice(0, 150)) + ")");
+    ok(/1 reading on this iPad hasn’t been backed up, so it is kept and will upload again/.test(seen.msg), "and says the reading that was never backed up is kept");
+    ok(paths().some(n => n.startsWith("C044/")) && !tomb() && D8.deleted.length === 0, "a name that doesn't match deletes nothing");
+    D8.denyDelete = true; A.answer = "C044"; await A.pg.click("#siteView >> text=Delete site");
+    await A.pg.waitForFunction(() => /Couldn’t delete C044/.test(document.querySelector("#toast").textContent), null, {timeout: 15000});
+    ok(paths().some(n => n.startsWith("C044/")) && !tomb() && await A.pg.evaluate(() => STATE.readings.length) === 2, "Dropbox refuses: nothing deleted, nothing written to the list, A keeps its readings");
+    D8.denyDelete = false;
+    D8.onUpload = p => { if (p === LISTF) D8.put(LISTF, JSON.stringify({sites: {ELSEWHERE: {key: "ELSEWHERE", name: "Elsewhere", at: "2026-11-15T10:00:00Z", by: "Third Inspector"}}})); };   // another iPad writes the list first
+    const t0 = new Date().toISOString();
+    A.answer = "C044"; await A.pg.click("#siteView >> text=Delete site");
+    await A.pg.waitForFunction(() => VIEW.name === "dash" && /^Deleted C044/.test(document.querySelector("#toast").textContent), null, {timeout: 15000});
+    await idle(A.pg);
+    ok(!paths().some(n => n.startsWith("C044/")) && D8.deleted.filter(x => x.endsWith("/C044")).length === 1 && D8.deleted.length === 1, "the whole C044 folder is deleted with files/delete_v2 (" + D8.deleted.join(", ") + ")");
+    { const t = tomb(), s44 = t && t.sites.C44;
+      ok(s44 && s44.key === "C44" && s44.name === "C044" && s44.by === "Test Inspector" && s44.at >= t0 && Math.abs(Date.parse(s44.at) - Date.now()) < 60000, "Deleted sites.json lists the site: key, name, when, who " + JSON.stringify(s44));
+      ok(t && t.sites.ELSEWHERE && t.sites.ELSEWHERE.by === "Third Inspector" && !("readings" in t), "the list was merged with what another iPad wrote at the same moment, not overwritten; it holds sites only"); }
+    ok(await A.pg.evaluate(() => STATE.readings.map(r => r.id).join()) === "unsentA1", "A: its backed-up copy is gone from the iPad, the reading that was never uploaded is kept");
+    await A.pg.waitForFunction(() => STATE.readings[0].synced, null, {timeout: 20000}); await idle(A.pg);
+    ok(paths().some(n => /^C-44\/.*unsentA1\.json$/.test(n)) && !paths().some(n => n.startsWith("C044/")), "it uploads as usual, which brings the site back (as C-44): " + paths().filter(n => /unsentA1/.test(n)).join(" | "));
+    ok((await dashRows(A.pg)).map(r => r.join(" ")).join(",") === "C-44 1,Keep Farm 2", "A's dashboard: " + (await dashRows(A.pg)).map(r => r.join(" ")).join(", "));
+    ok(!paths().some(n => /^Tribar readings - C044/.test(n)) && paths().filter(n => n.startsWith("Keep Farm/")).length === 6, "Keep Farm untouched (and no summary came back for C044)");
+
+    /* iPad B gets signal again */
+    ok(!paths().some(n => /mineB/.test(n)), "(nothing of B's is in Dropbox yet)");
+    await B.c.setOffline(false); await B.pg.evaluate(() => window.dispatchEvent(new Event("online")));
+    await B.pg.waitForFunction(() => STATE.readings.length === 2 && STATE.readings.every(r => r.synced), null, {timeout: 20000}); await idle(B.pg);
+    ok(!paths().some(n => /mineB002/.test(n)) && !paths().some(n => /^(c 44|C 044|C044)\//.test(n)), "B did not upload its backed-up copy of the deleted site, nor bring C044 back");
+    ok(paths().some(n => /^C-44\/.*mineB001\.json$/.test(n)) && paths().some(n => /^C-44\/.*mineB001 marked 1\.jpg$/.test(n)) && paths().some(n => /^Keep Farm\/.*mineB003\.json$/.test(n)),
+       "B's readings that were never uploaded do upload, the C044 one into the site's new folder: " + paths().filter(n => /mineB/.test(n)).join(" | "));
+    ok(await B.pg.evaluate(() => STATE.readings.map(r => r.id).sort().join()) === "mineB001,mineB003", "B: the backed-up copy is gone from the iPad, the others stay");
+    { const m = await B.pg.textContent("#syncMsg"); ok(/Removed from this iPad because the team deleted the site: 1 backed-up reading at C044 \(deleted by Test Inspector/.test(m), "B says what was removed and why: " + (m.match(/Removed[^)]*\)/) || [""])[0]); }
+    ok((await dashRows(B.pg)).map(r => r.join(" ")).join(",") === "C-44 2,Keep Farm 3", "B's dashboard has no C044: " + (await dashRows(B.pg)).map(r => r.join(" ")).join(", "));
+    await B.c.setOffline(true); await B.pg.evaluate(() => { TEAM.index = null; TEAM.loaded = false; return refreshTeam(false); });
+    ok((await dashSites(B.pg)).join(",") === "C-44,Keep Farm" && await B.pg.evaluate(async () => !Object.values((await TribarSync.cachedIndex()).readings).some(e => /C044/.test(e.dir))),
+       "offline, from the copy of the team folder kept on the iPad: still no C044");
+    await B.c.setOffline(false);
+
+    /* what B uploaded after the deletion is new work: a later sync doesn't take it off B, and it shows for everyone */
+    await B.pg.evaluate(() => { STATE.readings.unshift({id: "newB0001", savedAt: new Date(Date.now() + 5000).toISOString(), site: "c 44", barn: "B", room: "9", row: "1", crate: "1", band: "0-10%", worstSpot: 0.02, by: "Test Inspector", photos: [], files: [], synced: false}); persist(); });
+    await B.pg.evaluate(() => sync()); await idle(B.pg);
+    ok(await B.pg.evaluate(() => STATE.readings.map(r => r.id).sort().join()) === "mineB001,mineB003,newB0001" && paths().some(n => /^C-44\/.*newB0001\.json$/.test(n)), "a later sync keeps B's readings that went up after the deletion, and uploads the newest");
+    await A.pg.evaluate(() => refreshTeam(true)); await idle(A.pg);
+    ok((await dashRows(A.pg)).map(r => r.join(" ")).join(",") === "C-44 3,Keep Farm 3", "A's dashboard shows them too: " + (await dashRows(A.pg)).map(r => r.join(" ")).join(", "));
+    await B.c.close();
+
+    /* the trash button on a reading is as it was: it only removes the reading from this iPad */
+    const E = await pad([]);
+    await E.pg.goto(APP + "#/measure"); await idle(E.pg);
+    await inject(E.pg, [rd("off00002", "Keep Farm", "07", {by: "Test Inspector", synced: false}), Object.assign(rd("off00001", "Keep Farm", "06", {by: "Test Inspector"}), {synced: "2026-11-06T16:00:00Z"})]);
+    const msgs = []; E.pg.on("dialog", d => { msgs.push(d.message()); d.accept(); });
+    const calls = D8.log.length, delBefore = D8.deleted.length, tombBefore = D8.files.get(LISTF.toLowerCase()).rev;
+    await E.pg.locator("#saved .reading", {hasText: "Room 1"}).first().locator("button[title='Delete reading']").click();   // off00002: not backed up (newest first)
+    ok(msgs[0] === "Delete the reading for B · Room 1 · Row 1 · Crate 1 from front? It hasn’t been backed up to Dropbox." && await E.pg.evaluate(() => STATE.readings.map(r => r.id).join()) === "off00001", "a reading not backed up: the old warning, removed from the iPad");
+    await E.pg.locator("#saved .reading button[title='Delete reading']").click();
+    await E.pg.waitForFunction(() => STATE.readings.length === 0);
+    ok(msgs[1] === "Delete the reading for B · Room 1 · Row 1 · Crate 1 from front?", "a backed-up reading: just the question: " + msgs[1]);
+    await E.pg.waitForTimeout(500);
+    ok(D8.deleted.length === delBefore && D8.log.slice(calls).every(l => l.endpoint !== "files/delete_v2") && D8.files.get(LISTF.toLowerCase()).rev === tombBefore && await E.pg.evaluate(() => TribarSync.pendingDeletes()) === 0,
+       "neither touches Dropbox, the list or a queue");
+    /* Delete site is not offered with no signal */
+    await E.pg.evaluate(() => { location.hash = "#/site/keep%20farm"; }); await E.pg.waitForFunction(() => VIEW.name === "site");
+    await E.c.setOffline(true); const nd = msgs.length;
+    await E.pg.click("#siteView >> text=Delete site"); await E.pg.waitForTimeout(400);
+    ok(msgs.length === nd && /No signal/.test(await E.pg.textContent("#toast")) && paths().some(n => n.startsWith("Keep Farm/")), "Delete site with no signal: refused, nothing asked, nothing deleted");
+    ok(![A, B, E].some(x => x.pg.errs.length), "no page errors" + [A, B, E].map(x => x.pg.errs.join("; ")).join(""));
+    await E.c.close(); await A.c.close();
   }
 
   /* ---- a new page with the browser's cached copy of the previous sync.js ---- */
